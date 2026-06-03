@@ -113,21 +113,23 @@ async def block_non_admin_private(update: Update) -> bool:
 async def reply(update, text):
     await update.message.reply_text(text, parse_mode='Markdown')
 
+# ============ USER COMMANDS ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await block_non_admin_private(update): return
     if bot_status == "off":
         await reply(update, "🔴 *बॉट अभी बंद (OFF) है*")
         return
     msg = (
-        "✨ *𝑭𝑹𝑬𝑬 𝑭𝑰𝑹𝑬 𝑳𝑰𝑲𝑬 𝑩𝑶𝑻* ✨\n"
-        "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
-        "💬 `/like REGION UID` – लाइक भेजने के लिए\n"
-        "💬 `/help` – सभी कमांड्स देखने के लिए\n"
-        "💬 `/info` – अपने बचे हुए लाइक्स देखने के लिए\n\n"
-        "📌 *उदाहरण:* `/like IND 14160011100`\n"
-        f"🔥 आपकी दैनिक सीमा: `{daily_limit}` लाइक्स\n"
-        "🌍 *कोई भी रीज़न कोड काम करेगा*\n"
-        "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯"
+        "┌─[ 👑 S.KANHAIYA LIKE BOT ]─🥷\n"
+        "│\n"
+        "├─► 💬 `/like REGION UID` – लाइक भेजने के लिए\n"
+        "├─► 💬 `/help` – सभी कमांड्स देखने के लिए\n"
+        "├─► 💬 `/info` – अपने बचे हुए लाइक्स देखने के लिए\n"
+        "│\n"
+        "├─► 📌 *उदाहरण:* `/like IND 14160011100`\n"
+        f"├─► 🔥 आपकी दैनिक सीमा: `{daily_limit}` लाइक्स\n"
+        "│\n"
+        "└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
     )
     await reply(update, msg)
 
@@ -135,16 +137,20 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await block_non_admin_private(update): return
     if bot_status == "off": return
     msg = (
-        "📖 *कमांड लिस्ट*\n\n"
-        "🔹 `/like REGION UID` – 1 लाइक भेजें\n"
-        "🔹 `/info` – अपने बचे हुए लाइक्स चेक करें\n"
-        "🔹 `/start` – स्वागत संदेश\n\n"
+        "┌─[ 📖 COMMAND MENU ]─📝\n"
+        "│\n"
+        "├─► 🔹 `/like REGION UID` – 1 लाइक भेजें\n"
+        "├─► 🔹 `/info` – बचे हुए लाइक्स चेक करें\n"
+        "├─► 🔹 `/start` – स्वागत संदेश\n"
+        "│\n"
         "👑 *एडमिन कमांड्स:*\n"
-        "`/allow` – वर्तमान ग्रुप को अनुमति दें\n"
-        "`/off` / `/on` – बॉट को बंद/चालू करें\n"
-        "`/stats` – आज का उपयोग (Stats)\n"
-        "`/setprivate` / `/setpublic` – ग्रुप मोड बदलें\n"
-        "`/setlimit <संख्या>` – प्रति यूजर दैनिक सीमा तय करें"
+        "├─► `/allow` – ग्रुप अनुमति दें\n"
+        "├─► `/off` / `/on` – बॉट चालू/बंद\n"
+        "├─► `/stats` – आज का उपयोग देखें\n"
+        "├─► `/setprivate` / `/setpublic` – मोड बदलें\n"
+        "├─► `/setlimit <संख्या>` – दैनिक सीमा बदलें\n"
+        "│\n"
+        "└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
     )
     await reply(update, msg)
 
@@ -153,18 +159,21 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if bot_status == "off": return
     uid = update.effective_user.id
     if is_admin(uid):
-        await reply(update, "👑 *एडमिन अकाउंट*\n🔥 *असीमित लाइक्स*")
+        await reply(update, "┌─[ 👑 ADMIN ACCOUNT ]─🥷\n│\n├─► 🔥 असीमित लाइक्स उपलब्ध हैं।\n│\n└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──")
         return
     t = today_str()
     used = user_limits.get(uid, {}).get('count', 0) if uid in user_limits and user_limits[uid]['date'] == t else 0
     remaining = daily_limit - used
     msg = (
-        "🤖 *बॉट जानकारी*\n\n"
-        f"⚙️ मोड: `{bot_mode.upper()}`\n"
-        f"🟢 स्टेटस: `{bot_status.upper()}`\n"
-        f"📅 दैनिक सीमा: `{daily_limit}` लाइक्स\n"
-        f"✅ आज उपयोग किया: `{used}`\n"
-        f"🟢 शेष: `{remaining}`"
+        "┌─[ 🤖 USER INFO ]─📊\n"
+        "│\n"
+        f"├─► ⚙️ मोड: `{bot_mode.upper()}`\n"
+        f"├─► 🟢 स्टेटस: `{bot_status.upper()}`\n"
+        f"├─► 📅 दैनिक सीमा: `{daily_limit}` लाइक्स\n"
+        f"├─► ✅ आज उपयोग किया: `{used}`\n"
+        f"├─► 🟢 शेष लाइक्स: `{remaining}`\n"
+        "│\n"
+        "└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
     )
     await reply(update, msg)
 
@@ -194,11 +203,28 @@ async def like_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply(update, f"⚠️ *दैनिक सीमा समाप्त!*\nआप आज `{used}/{daily_limit}` लाइक्स का उपयोग कर चुके हैं।")
         return
     
-    proc_msg = await update.message.reply_text(f"🔄 *प्रक्रिया जारी है...*\nUID: `{uid}`", parse_mode='Markdown')
+    proc_msg = await update.message.reply_text(
+        "┌─[ 👑 S.KANHAIYA LIKE BOT ]─🥷\n"
+        "│\n"
+        f"├─► 🔄 *प्रक्रिया जारी है...*\n"
+        f"├─► 🆔 यूआईडी: `{uid}`\n"
+        f"├─► 🌍 रीजन: {region}\n"
+        "│\n"
+        "└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──", 
+        parse_mode='Markdown'
+    )
+    
     data = await call_like_api(region, uid)
     
     if data is None or "error" in data:
-        await proc_msg.edit_text(f"❌ *API एरर!*", parse_mode='Markdown')
+        await proc_msg.edit_text(
+            "┌─[ 👑 S.KANHAIYA LIKE BOT ]─🥷\n"
+            "│\n"
+            "├─► ❌ *[ERROR] API रेस्पॉन्स फेल*\n"
+            "│\n"
+            "└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──", 
+            parse_mode='Markdown'
+        )
         return
     
     status = data.get('status')
@@ -207,14 +233,48 @@ async def like_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     after = data.get('LikesafterCommand', 0)
     given = data.get('LikesGivenByAPI', 0)
     
+    # ✅ सफलता (SUCCESS INTERFACE)
     if status == 1:
         update_user_like(user_id)
-        result = f"╭━━━━━━━━━━━━━━━━✪\n│✅ लाइक भेज दिया गया है 😍\n╰━━━━━━━━━━━━━━━━✪\n\n👤 नाम: {player}\n🆔 UID: `{uid}`\n👍 पहले: {before}\n❤️ अभी: {after}\n➕ दिए गए: +{given}"
+        result = (
+            f"┌─[ 👑 S.KANHAIYA LIKE BOT ]─🥷\n"
+            f"│\n"
+            f"├─► ✅ लाइक भेज दिया गया है 😍\n"
+            f"│\n"
+            f"├─► 👤 खिलाड़ी: {player}\n"
+            f"├─► 🆔 यूआईडी: `{uid}`\n"
+            f"├─► 🌍 रीजन: {region}\n"
+            f"│\n"
+            f"├─► 📊 ओल्ड स्कोर: {before}\n"
+            f"├─► 🔄 न्यू स्कोर: {after}\n"
+            f"├─► ➕ प्लस लाइक: +{given}\n"
+            f"│\n"
+            f"└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
+        )
         await proc_msg.edit_text(result, parse_mode='Markdown')
+        
+    # ⚠️ असफलता (ERROR INTERFACE)
     else:
-        result = f"╭━━━━━━━━━━━━━━━━✪\n│⚠️ लाइक नहीं भेजा जा सका 🙂\n╰━━━━━━━━━━━━━━━━✪\n\n👤 नाम: {player}"
-        await proc_msg.edit_text(result, parse_mode='Markdown')
+        result = (
+            f"┌─[ 👑 S.KANHAIYA LIKE BOT ]─🥷\n"
+            f"│\n"
+            f"├─► ⚠️ [ERROR] लाइक नहीं भेजा जा सका\n"
+            f"│\n"
+            f"├─► 👤 खिलाड़ी: {player}\n"
+            f"├─► 🆔 यूआईडी: `{uid}`\n"
+            f"├─► 🌍 रीजन: {region}\n"
+            f"│\n"
+            f"├─► 📊 ओल्ड स्कोर: {before}\n"
+            f"├─► 🔄 न्यू स्कोर: {after}\n"
+            f"├─► ➕ प्लस लाइक: {given}\n"
+            f"│\n"
+            f"└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
+        )
+        keyboard = [[InlineKeyboardButton("Instagram Support", url="https://www.instagram.com/s.kanhaiya.7m")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await proc_msg.edit_text(result, parse_mode='Markdown', reply_markup=reply_markup)
 
+# ============ ADMIN COMMANDS ============
 async def allow_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
     chat = update.effective_chat
