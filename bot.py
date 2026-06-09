@@ -9,6 +9,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ============ CONFIGURATION ============
 API_URL = "https://kanhaiya-raikwar.vercel.app/"
+# यहाँ प्लेयर इन्फो निकालने के लिए आपकी दूसरी API का URL जोड़ा गया है
+INFO_API_URL = "https://s-kanhaiya-ff-info.vercel.app/player-info"
 ENCODED_KEY = "WkVYWFk="
 API_KEY = base64.b64decode(ENCODED_KEY).decode()
 
@@ -98,6 +100,17 @@ async def call_like_api(region, uid):
     except asyncio.TimeoutError: return {"error": "Timeout"}
     except Exception as e: return {"error": str(e)}
 
+# प्लेयर इन्फो API को कॉल करने के लिए नया फंक्शन
+async def call_info_api(region, uid):
+    try:
+        url = f"{INFO_API_URL}?region={region.lower()}&uid={uid}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as resp:
+                if resp.status == 200: return await resp.json()
+                return {"error": f"HTTP {resp.status}"}
+    except asyncio.TimeoutError: return {"error": "Timeout"}
+    except Exception as e: return {"error": str(e)}
+
 def is_group_allowed(chat_id, chat_type):
     if chat_type == "private" or bot_mode == "public": return True
     return str(chat_id) in allowed_groups
@@ -124,7 +137,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "│\n"
         "├─► 💬 `/like REGION UID` – लाइक भेजने के लिए\n"
         "├─► 💬 `/help` – सभी कमांड्स देखने के लिए\n"
-        "├─► 💬 `/info` – अपने बचे हुए लाइक्स देखने के लिए\n"
+        "├─► 💬 `/info` – अपनी लिमिट देखने के लिए\n"
+        "├─► 💬 `/info REGION UID` – प्लेयर डेटा देखने के लिए\n"
         "│\n"
         "├─► 📌 *उदाहरण:* `/like IND 14160011100`\n"
         f"├─► 🔥 आपकी दैनिक सीमा: `{daily_limit}` लाइक्स\n"
@@ -140,7 +154,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "┌─[ 📖 COMMAND MENU ]─📝\n"
         "│\n"
         "├─► 🔹 `/like REGION UID` – 1 लाइक भेजें\n"
-        "├─► 🔹 `/info` – बचे हुए लाइक्स चेक करें\n"
+        "├─► 🔹 `/info` – खुद के बचे हुए लाइक्स चेक करें\n"
+        "├─► 🔹 `/info REGION UID` – किसी प्लेयर की डिटेल्स निकालें\n"
         "├─► 🔹 `/start` – स्वागत संदेश\n"
         "│\n"
         "👑 *एडमिन कमांड्स:*\n"
@@ -157,6 +172,78 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await block_non_admin_private(update): return
     if bot_status == "off": return
+    
+    # 🌟 नया फीचर: अगर यूज़र /info के साथ REGION और UID पास करता है
+    if len(context.args) == 2:
+        chat_id = update.effective_chat.id
+        chat_type = update.effective_chat.type
+        if chat_type != "private" and not is_group_allowed(chat_id, chat_type):
+            await reply(update, "🚫 *यह बॉट केवल अनुमति प्राप्त ग्रुप्स में ही काम करता है!*")
+            return
+            
+        region = context.args[0].upper()
+        uid = context.args[1]
+        if not uid.isdigit():
+            await reply(update, "❌ *UID में केवल नंबर होने चाहिए!*")
+            return
+            
+        proc_msg = await update.message.reply_text(
+            "┌─[ 🔍 PLAYER INFO SEARCH ]─📊\n"
+            "│\n"
+            "├─► 🔄 *डेटा निकाला जा रहा है...*\n"
+            f"├─► 🆔 यूआईडी: `{uid}`\n"
+            f"├─► 🌍 रीजन: {region}\n"
+            "│\n"
+            "└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──",
+            parse_mode='Markdown'
+        )
+        
+        raw_data = await call_info_api(region, uid)
+        
+        if raw_data is None or "error" in raw_data or not (raw_data.get("BasicInfo") or raw_data.get("basicInfo")):
+            await proc_msg.edit_text(
+                "┌─[ 🔍 PLAYER INFO SEARCH ]─📊\n"
+                "│\n"
+                "├─► ❌ *खिलाड़ी का डेटा नहीं मिल पाया या API फेल हो गई!*\n"
+                "│\n"
+                "└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──",
+                parse_mode='Markdown'
+            )
+            return
+
+        basic = raw_data.get("BasicInfo") or raw_data.get("basicInfo") or {}
+        social = raw_data.get("socialInfo") or raw_data.get("SocialInfo") or {}
+        credit = raw_data.get("creditScoreInfo") or raw_data.get("CreditScoreInfo") or {}
+        
+        nickname = basic.get("nickname") or basic.get("Nickname") or "Unknown"
+        level = basic.get("level", "N/A")
+        likes = basic.get("liked") or basic.get("Liked") or 0
+        br_points = basic.get("rankingPoints", "N/A")
+        cs_points = basic.get("csRank", "N/A")
+        credit_score = credit.get("creditScore", "N/A")
+        signature = social.get("signature") or "No Signature Set"
+        
+        info_res = (
+            f"┌─[ 👤 PLAYER PROFILE ]─👑\n"
+            f"│\n"
+            f"├─► 📝 नाम: *{nickname}*\n"
+            f"├─► 🆔 यूआईडी: `{uid}`\n"
+            f"├─► 🌍 रीजन: `{region}`\n"
+            f"├─► 📈 लेवल: `{level}`\n"
+            f"├─► ❤️ कुल लाइक्स: `{likes}`\n"
+            f"│\n"
+            f"├─► 🏆 BR रैंक पॉइंट: `{br_points}`\n"
+            f"├─► 🎮 CS रैंक पॉइंट: `{cs_points}`\n"
+            f"├─► 💯 क्रेडिट स्कोर: `{credit_score}`\n"
+            f"│\n"
+            f"├─► ✍️ सिग्नेचर: `{signature}`\n"
+            f"│\n"
+            f"└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
+        )
+        await proc_msg.edit_text(info_res, parse_mode='Markdown')
+        return
+
+    # 🌟 पुराना फीचर: अगर सिर्फ /info भेजा गया हो
     uid = update.effective_user.id
     if is_admin(uid):
         await reply(update, "┌─[ 👑 ADMIN ACCOUNT ]─🥷\n│\n├─► 🔥 असीमित लाइक्स उपलब्ध हैं।\n│\n└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──")
@@ -233,7 +320,6 @@ async def like_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     after = data.get('LikesafterCommand', 0)
     given = data.get('LikesGivenByAPI', 0)
     
-    # ✅ सफलता (SUCCESS INTERFACE)
     if status == 1:
         update_user_like(user_id)
         result = (
@@ -253,7 +339,6 @@ async def like_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await proc_msg.edit_text(result, parse_mode='Markdown')
         
-    # ⚠️ असफलता (ERROR INTERFACE)
     else:
         result = (
             f"┌─[ 👑 S.KANHAIYA LIKE BOT ]─🥷\n"
