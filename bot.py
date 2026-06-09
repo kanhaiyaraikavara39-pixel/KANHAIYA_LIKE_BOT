@@ -9,7 +9,6 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ============ CONFIGURATION ============
 API_URL = "https://kanhaiya-raikwar.vercel.app/"
-# यहाँ प्लेयर इन्फो निकालने के लिए आपकी दूसरी API का URL जोड़ा गया है
 INFO_API_URL = "https://s-kanhaiya-ff-info.vercel.app/player-info"
 ENCODED_KEY = "WkVYWFk="
 API_KEY = base64.b64decode(ENCODED_KEY).decode()
@@ -100,7 +99,6 @@ async def call_like_api(region, uid):
     except asyncio.TimeoutError: return {"error": "Timeout"}
     except Exception as e: return {"error": str(e)}
 
-# प्लेयर इन्फो API को कॉल करने के लिए नया फंक्शन
 async def call_info_api(region, uid):
     try:
         url = f"{INFO_API_URL}?region={region.lower()}&uid={uid}"
@@ -165,7 +163,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "├─► `/setprivate` / `/setpublic` – मोड बदलें\n"
         "├─► `/setlimit <संख्या>` – दैनिक सीमा बदलें\n"
         "│\n"
-        "└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
+        "└─[ ⚡️ ᴘᴏᴡᴇʀᴇ占 ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
     )
     await reply(update, msg)
 
@@ -173,7 +171,6 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await block_non_admin_private(update): return
     if bot_status == "off": return
     
-    # 🌟 नया फीचर: अगर यूज़र /info के साथ REGION और UID पास करता है
     if len(context.args) == 2:
         chat_id = update.effective_chat.id
         chat_type = update.effective_chat.type
@@ -223,6 +220,9 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         credit_score = credit.get("creditScore", "N/A")
         signature = social.get("signature") or "No Signature Set"
         
+        # 🌟 API से मिले पूरे डेटा को सुंदर JSON स्ट्रिंग में बदलना
+        raw_json_str = json.dumps(raw_data, indent=2, ensure_ascii=False)
+
         info_res = (
             f"┌─[ 👤 PLAYER PROFILE ]─👑\n"
             f"│\n"
@@ -238,12 +238,16 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"│\n"
             f"├─► ✍️ सिग्नेचर: `{signature}`\n"
             f"│\n"
+            f"├─► ⚙️ *ALL API RAW DATA:*\n"
+            f"```json\n"
+            f"{raw_json_str}\n"
+            f"
+```\n"
             f"└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
         )
         await proc_msg.edit_text(info_res, parse_mode='Markdown')
         return
 
-    # 🌟 पुराना फीचर: अगर सिर्फ /info भेजा गया हो
     uid = update.effective_user.id
     if is_admin(uid):
         await reply(update, "┌─[ 👑 ADMIN ACCOUNT ]─🥷\n│\n├─► 🔥 असीमित लाइक्स उपलब्ध हैं।\n│\n└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──")
