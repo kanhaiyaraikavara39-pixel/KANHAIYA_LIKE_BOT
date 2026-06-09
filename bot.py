@@ -163,7 +163,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "├─► `/setprivate` / `/setpublic` – मोड बदलें\n"
         "├─► `/setlimit <संख्या>` – दैनिक सीमा बदलें\n"
         "│\n"
-        "└─[ ⚡️ ᴘᴏᴡᴇʀᴇ占 ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
+        "└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
     )
     await reply(update, msg)
 
@@ -203,48 +203,91 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "│\n"
                 "├─► ❌ *खिलाड़ी का डेटा नहीं मिल पाया या API फेल हो गई!*\n"
                 "│\n"
-                "└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──",
+                "└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪ臣 ]──",
                 parse_mode='Markdown'
             )
             return
 
+        # API के अलग-अलग keys को संभालना (ताकि छोटा-बड़ा अक्षर होने पर भी डेटा न छूटे)
         basic = raw_data.get("BasicInfo") or raw_data.get("basicInfo") or {}
         social = raw_data.get("socialInfo") or raw_data.get("SocialInfo") or {}
         credit = raw_data.get("creditScoreInfo") or raw_data.get("CreditScoreInfo") or {}
-        
+        pet = raw_data.get("petInfo") or raw_data.get("PetInfo") or {}
+        guild = raw_data.get("guildInfo") or raw_data.get("GuildInfo") or {}
+
+        # 1. Basic Information
         nickname = basic.get("nickname") or basic.get("Nickname") or "Unknown"
         level = basic.get("level", "N/A")
+        exp = basic.get("exp", "N/A")
         likes = basic.get("liked") or basic.get("Liked") or 0
-        br_points = basic.get("rankingPoints", "N/A")
-        cs_points = basic.get("csRank", "N/A")
-        credit_score = credit.get("creditScore", "N/A")
+        honor_score = credit.get("creditScore") or credit.get("CreditScore") or "N/A"
+        title_name = basic.get("title", "Not Found")
         signature = social.get("signature") or "No Signature Set"
-        
-        # 🌟 API से मिले पूरे डेटा को सुंदर JSON स्ट्रिंग में बदलना
-        raw_json_str = json.dumps(raw_data, indent=2, ensure_ascii=False)
 
+        # 2. Activity Information
+        br_points = basic.get("rankingPoints", "1000")
+        cs_points = basic.get("csRank", "0")
+        create_time = basic.get("createTime") or basic.get("createdAt") or "N/A"
+        last_login = basic.get("lastLogin") or basic.get("lastLoginTime") or "N/A"
+        
+        # अगर टाइमस्टैम्प नंबर में है तो उसे तारीख में बदलना
+        if str(create_time).isdigit():
+            create_time = datetime.fromtimestamp(int(create_time)).strftime('%d %B %Y at %I:%M:%S %p')
+        if str(last_login).isdigit():
+            last_login = datetime.fromtimestamp(int(last_login)).strftime('%d %B %Y at %I:%M:%S %p')
+
+        # 3. Overview Information
+        avatar = basic.get("avatarName") or basic.get("avatar") or "Unknown"
+        banner = basic.get("bannerName") or basic.get("banner") or "Unknown"
+        pin = basic.get("pinName") or basic.get("pin") or "Not Found"
+
+        # 4. Pet Details
+        pet_name = pet.get("name", "Not Found")
+        pet_type = pet.get("type", "Not Found")
+        pet_level = pet.get("level", "Not Found")
+
+        # 5. Guild Information
+        guild_name = guild.get("name", "Not Found")
+        guild_id = guild.get("id", "Not Found")
+        guild_lvl = guild.get("level", "Not Found")
+
+        # ए टू जेड कस्टमाइज्ड फुल इन्फॉर्मेशन स्ट्रिंग बनाना
         info_res = (
-            f"┌─[ 👤 PLAYER PROFILE ]─👑\n"
-            f"│\n"
-            f"├─► 📝 नाम: *{nickname}*\n"
-            f"├─► 🆔 यूआईडी: `{uid}`\n"
-            f"├─► 🌍 रीजन: `{region}`\n"
-            f"├─► 📈 लेवल: `{level}`\n"
-            f"├─► ❤️ कुल लाइक्स: `{likes}`\n"
-            f"│\n"
-            f"├─► 🏆 BR रैंक पॉइंट: `{br_points}`\n"
-            f"├─► 🎮 CS रैंक पॉइंट: `{cs_points}`\n"
-            f"├─► 💯 क्रेडिट स्कोर: `{credit_score}`\n"
-            f"│\n"
-            f"├─► ✍️ सिग्नेचर: `{signature}`\n"
-            f"│\n"
-            f"├─► ⚙️ *ALL API RAW DATA:*\n"
-            f"```json\n"
-            f"{raw_json_str}\n"
-            f"
-```\n"
-            f"└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
+            f"Account Information:\n"
+            f"┌ Basic Information:\n"
+            f"├─ Name: *{nickname}*\n"
+            f"├─ UID: `{uid}`\n"
+            f"├─ Level: {level} (Exp: {exp})\n"
+            f"├─ Region: {region}\n"
+            f"├─ Likes: {likes}\n"
+            f"├─ Honor Score: {honor_score}\n"
+            f"├─ Title Name: {title_name}\n"
+            f"└─ Signature: {signature}\n\n"
+            
+            f"┌ Activity Information:\n"
+            f"├─ Br Rank Points: {br_points}\n"
+            f"├─ Cs Rank Points: {cs_points}\n"
+            f"├─ Created At: {create_time}\n"
+            f"└─ Last Login: {last_login}\n\n"
+            
+            f"┌ Overview Information:\n"
+            f"├─ Avatar Name: {avatar}\n"
+            f"├─ Banner Name: {banner}\n"
+            f"└─ Pin Name: {pin}\n\n"
+            
+            f"┌ Pet Details:\n"
+            f"├─ Pet Name: {pet_name}\n"
+            f"├─ Pet Type: {pet_type}\n"
+            f"└─ Pet Level: {pet_level}\n\n"
+            
+            f"┌ Guild Information:\n"
+            f"├─ Guild Name: {guild_name}\n"
+            f"├─ Guild ID: `{guild_id}`\n"
+            f"└─ Guild Level: {guild_lvl}\n\n"
+            
+            f"└─ [ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
         )
+        
         await proc_msg.edit_text(info_res, parse_mode='Markdown')
         return
 
@@ -299,7 +342,7 @@ async def like_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "│\n"
         f"├─► 🔄 *प्रक्रिया जारी है...*\n"
         f"├─► 🆔 यूआईडी: `{uid}`\n"
-        f"├─► 🌍 रीजन: {region}\n"
+        f"├─► 🌍 रीज़न: {region}\n"
         "│\n"
         "└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──", 
         parse_mode='Markdown'
@@ -331,9 +374,9 @@ async def like_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"│\n"
             f"├─► ✅ लाइक भेज दिया गया है 😍\n"
             f"│\n"
-            f"├─► 👤 खिलाड़ी: {player}\n"
+            f"├─► 👤 खिलाड़ी: {player}\n"
             f"├─► 🆔 यूआईडी: `{uid}`\n"
-            f"├─► 🌍 रीजन: {region}\n"
+            f"├─► 🌍 रीज़न: {region}\n"
             f"│\n"
             f"├─► 📊 ओल्ड स्कोर: {before}\n"
             f"├─► 🔄 न्यू स्कोर: {after}\n"
@@ -349,9 +392,9 @@ async def like_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"│\n"
             f"├─► ⚠️ [ERROR] लाइक नहीं भेजा जा सका\n"
             f"│\n"
-            f"├─► 👤 खिलाड़ी: {player}\n"
+            f"├─► 👤 खिलाड़ी: {player}\n"
             f"├─► 🆔 यूआईडी: `{uid}`\n"
-            f"├─► 🌍 रीजन: {region}\n"
+            f"├─► 🌍 रीज़न: {region}\n"
             f"│\n"
             f"├─► 📊 ओल्ड स्कोर: {before}\n"
             f"├─► 🔄 न्यू स्कोर: {after}\n"
