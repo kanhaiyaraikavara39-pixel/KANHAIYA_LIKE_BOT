@@ -268,183 +268,439 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = today_str()
     used = user_limits.get(uid, {}).get('count', 0) if uid in user_limits and user_limits[uid]['date'] == t else 0
     remaining = daily_limit - used
-    msg = (
-        "┌─[ 🤖 USER INFO ]─📊\n"
-        "│\n"
-        f"├─► ⚙️ मोड: `{bot_mode.upper()}`\n"
-        f"├─► 🟢 स्टेटस: `{bot_status.upper()}`\n"
-        f"├─► 📅 दैनिक सीमा: `{daily_limit}` लाइक्स\n"
-        f"├─► ✅ आज उपयोग किया: `{used}`\n"
-        f"├─► 🟢 शेष लाइक्स: `{remaining}`\n"
-        "│\n"
-        "└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
-    )
-    await reply(update, msg)
+import os
+import json
+import base64
+import aiohttp
+import asyncio
+from datetime import date, datetime
+from flask import Flask, request, jsonify
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes
+import logging
 
-async def like_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if await block_non_admin_private(update): return
-    if bot_status == "off": return
+# ============ LOGGING ============
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# ============ FLASK APP ============
+app = Flask(__name__)
+
+# ============ CONFIGURATION ============
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8752690086:AAGEdWri8qtC6vHw2wHDObUmWmoa-hyyh-M")
+
+# APIs
+VISIT_API_URL = "https://kanhaiya-vvvvbvvb.vercel.app/"
+LIKE_API_URL = "https://kanhaiya-raikwar.vercel.app/"
+ENCODED_KEY = "WkVYWFk="
+API_KEY = base64.b64decode(ENCODED_KEY).decode()
+INFO_API_URL = "https://s-kanhaiya-ff-info.vercel.app/player-info"
+
+# ============ DATA STORAGE (Vercel /tmp/) ============
+DATA_FILE = '/tmp/bot_data.json'
+
+def load_data():
+    try:
+        with open(DATA_FILE, 'r') as f:
+            return json.load(f)
+    except:
+        return {'users': {}, 'stats': {}}
+
+def save_data(data):
+    try:
+        with open(DATA_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+    except:
+        pass
+
+# ============ USER LIMITS ============
+DAILY_LIMIT = 2
+
+def today_str():
+    return str(date.today())
+
+def can_user_like(user_id):
+    data = load_data()
+    t = today_str()
+    if str(user_id) not in data['users'] or data['users'][str(user_id)]['date'] != t:
+        return True
+    return data['users'][str(user_id)]['count'] < DAILY_LIMIT
+
+def update_user_like(user_id):
+    data = load_data()
+    t = today_str()
+    uid = str(user_id)
     
-    chat_id = update.effective_chat.id
-    chat_type = update.effective_chat.type
-    if chat_type != "private" and not is_group_allowed(chat_id, chat_type):
-        await reply(update, "🚫 *यह बॉट केवल अनुमति प्राप्त ग्रुप्स में ही काम करता है!*")
-        return
+    if uid not in data['users'] or data['users'][uid]['date'] != t:
+        data['users'][uid] = {'date': t, 'count': 0}
+    data['users'][uid]['count'] += 1
     
+    if t not in data['stats']:
+        data['stats'][t] = 0
+    data['stats'][t] += 1
+    
+    save_data(data)
+
+# ============ FORMAT FUNCTIONS ============
+
+def format_like_result(data):
+    return (
+        "┏━━━━━━━━━━━━━━━━━━━━━━┓\n"
+        "┃ ╔════════════════════╗ \n"
+        "┃ ║ ✦ S.KANHAIYA BOT ✦║\n"
+        "┃ ║ 💝 LIKE SENT 💝   ║\n"
+        "┃ ╚════════════════════╝ \n"
+        "┃                        \n"
+        "┃ ┌─ 👤 PROFILE ──────┐\n"
+        f"┃ │ NAME : {data.get('player', 'Unknown')}\n"
+        f"┃ │ UID  : {data.get('uid', 'N/A')}\n"
+        f"┃ │ REGION: {data.get('region', 'N/A')}\n"
+        "┃ └────────────────────┘\n"
+        "┃                        \n"
+        "┃ ┌─ ❤️ DETAILS ──────┐\n"
+        f"┃ │ BEFORE: {data.get('before', 0)}\n"
+        f"┃ │ AFTER : {data.get('after', 0)}\n"
+        f"┃ │ GIVEN : +{data.get('given', 0)}\n"
+        "┃ └────────────────────┘\n"
+        "┃                        \n"
+        "┃ ══════════════════════ \n"
+        "┃ 💫 @S.KANHAIYA 💫     \n"
+        "┗━━━━━━━━━━━━━━━━━━━━━━┛"
+    )
+
+def format_visit_result(data):
+    return (
+        "┏━━━━━━━━━━━━━━━━━━━━━━┓\n"
+        "┃ ╔════════════════════╗ \n"
+        "┃ ║ ✦ S.KANHAIYA BOT ✦║\n"
+        "┃ ║ 📊 VISIT SENT 📊  ║\n"
+        "┃ ╚════════════════════╝ \n"
+        "┃                        \n"
+        "┃ ┌─ 👤 PROFILE ──────┐\n"
+        f"┃ │ NAME : {data.get('nickname', 'Unknown')}\n"
+        f"┃ │ UID  : {data.get('uid', 'N/A')}\n"
+        f"┃ │ REGION: {data.get('region', 'N/A')}\n"
+        f"┃ │ LEVEL: {data.get('level', 'N/A')}\n"
+        "┃ └────────────────────┘\n"
+        "┃                        \n"
+        "┃ ┌─ 📊 DETAILS ──────┐\n"
+        f"┃ │ ✅SUCCESS: {data.get('success', 0)}\n"
+        f"┃ │ ❌FAILED : {data.get('fail', 0)}\n"
+        "┃ └────────────────────┘\n"
+        "┃                        \n"
+        "┃ ══════════════════════ \n"
+        "┃ 💫 @S.KANHAIYA 💫     \n"
+        "┗━━━━━━━━━━━━━━━━━━━━━━┛"
+    )
+
+def format_info_result(data):
+    filtered_info = (
+        "┏━━━━━━━━━━━━━━━━━━━━━━┓\n"
+        "┃ ╔════════════════════╗ \n"
+        "┃ ║ ✦ S.KANHAIYA BOT ✦║\n"
+        "┃ ║ 👤 PLAYER INFO 👤 ║\n"
+        "┃ ╚════════════════════╝ \n"
+        "┃                        \n"
+        "┃ ┌─ 🎮 BASIC ────────┐\n"
+        f"┃ │ NAME : {data.get('nickname', 'Unknown')}\n"
+        f"┃ │ UID  : {data.get('uid', 'N/A')}\n"
+        f"┃ │ REGION: {data.get('region', 'N/A')}\n"
+        f"┃ │ LEVEL: {data.get('level', 'N/A')}\n"
+        f"┃ │ LIKES: {data.get('likes', 0)}\n"
+        f"┃ │ EXP  : {data.get('exp', 'N/A')}\n"
+        f"┃ │ ACCT : {data.get('account_type', 'N/A')}\n"
+        "┃ └────────────────────┘\n"
+        "┃                        \n"
+        "┃ ┌─ 🏆 RANK ─────────┐\n"
+        f"┃ │ BR   : {data.get('br_points', 'N/A')}\n"
+        f"┃ │ CS   : {data.get('cs_points', 'N/A')}\n"
+        f"┃ │ MAX  : {data.get('max_rank', 'N/A')}\n"
+        f"┃ │ CREDIT: {data.get('credit_score', 'N/A')}\n"
+        "┃ └────────────────────┘\n"
+        "┃                        \n"
+        "┃ ┌─ 🐾 OTHER ────────┐\n"
+        f"┃ │ PET  : {data.get('pet_id', 'N/A')}\n"
+        f"┃ │ PET LVL: {data.get('pet_level', 'N/A')}\n"
+        f"┃ │ GENDER: {data.get('gender', 'N/A')}\n"
+        f"┃ │ SIGN : {data.get('signature', 'No Sig')[:15]}...\n"
+        "┃ └────────────────────┘\n"
+    )
+    
+    raw_data = data.get('raw', {})
+    raw_json = json.dumps(raw_data, indent=2, ensure_ascii=False)
+    raw_lines = raw_json.split('\n')
+    raw_part = ""
+    for line in raw_lines[:12]:
+        if len(line) > 35:
+            line = line[:35] + "..."
+        raw_part += f"┃ {line}\n"
+    if len(raw_lines) > 12:
+        raw_part += "┃ ...(truncated)\n"
+    
+    return (
+        filtered_info +
+        "┃                        \n"
+        "┃ ┌─ 📊 RAW DATA ──────┐\n"
+        f"{raw_part}"
+        "┃ └────────────────────┘\n"
+        "┃                        \n"
+        "┃ ══════════════════════ \n"
+        "┃ 💫 @S.KANHAIYA 💫     \n"
+        "┗━━━━━━━━━━━━━━━━━━━━━━┛"
+    )
+
+# ============ API FUNCTIONS ============
+
+async def call_visit_api(region, uid):
+    url = f"{VISIT_API_URL}{region}/{uid}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=15) as resp:
+                if resp.status != 200:
+                    return {"error": f"HTTP {resp.status}"}
+                return await resp.json()
+    except:
+        return {"error": "API request failed"}
+
+async def call_like_api(region, uid):
+    region_upper = region.upper()
+    url = f"{LIKE_API_URL}like?uid={uid}&region={region_upper}&key={API_KEY}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=15) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get('status') == 1:
+                        return {
+                            "player": data.get('PlayerNickname', 'Unknown'),
+                            "uid": data.get('UID', uid),
+                            "region": data.get('Region', region_upper),
+                            "given": data.get('LikesGivenByAPI', 0),
+                            "before": data.get('LikesbeforeCommand', 0),
+                            "after": data.get('LikesafterCommand', 0)
+                        }
+                    else:
+                        return {"error": "API returned error"}
+                return {"error": f"HTTP {resp.status}"}
+    except:
+        return {"error": "API request failed"}
+
+async def call_info_api(region, uid):
+    url = f"{INFO_API_URL}?region={region}&uid={uid}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=15) as resp:
+                if resp.status == 200:
+                    raw_data = await resp.json()
+                    basic = raw_data.get("BasicInfo") or raw_data.get("basicInfo") or {}
+                    social = raw_data.get("socialInfo") or raw_data.get("SocialInfo") or {}
+                    credit = raw_data.get("creditScoreInfo") or raw_data.get("CreditScoreInfo") or {}
+                    pet = raw_data.get("petInfo") or raw_data.get("PetInfo") or {}
+                    
+                    create_at_ts = basic.get("createAt") or basic.get("createTime") or 0
+                    try:
+                        create_at = datetime.fromtimestamp(int(create_at_ts)).strftime('%d-%m-%Y') if create_at_ts else "N/A"
+                    except:
+                        create_at = "N/A"
+                    
+                    gender_raw = social.get("gender", "N/A")
+                    if "FEMALE" in str(gender_raw).upper():
+                        gender = "Female ♀️"
+                    elif "MALE" in str(gender_raw).upper():
+                        gender = "Male ♂️"
+                    else:
+                        gender = "N/A"
+                    
+                    return {
+                        "nickname": basic.get("nickname") or basic.get("Nickname") or "Unknown",
+                        "uid": basic.get("accountId") or uid,
+                        "region": basic.get("region", region.upper()),
+                        "level": basic.get("level", "N/A"),
+                        "exp": basic.get("exp", "N/A"),
+                        "likes": basic.get("liked") or basic.get("Liked") or 0,
+                        "account_type": "Google/FB" if basic.get("accountType") == 1 else "Guest/Other",
+                        "create_at": create_at,
+                        "br_points": basic.get("rankingPoints", "N/A"),
+                        "cs_points": basic.get("csRank", "N/A"),
+                        "max_rank": basic.get("maxRank", "N/A"),
+                        "credit_score": credit.get("creditScore", "N/A"),
+                        "pet_id": pet.get("id", "No Pet"),
+                        "pet_level": pet.get("level", "N/A"),
+                        "gender": gender,
+                        "signature": social.get("signature") or "No Signature Set",
+                        "raw": raw_data
+                    }
+                return {"error": f"HTTP {resp.status}"}
+    except:
+        return {"error": "API request failed"}
+
+# ============ TELEGRAM HANDLERS ============
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("📊 Visit", callback_data="help_visit")],
+        [InlineKeyboardButton("❤️ Likes", callback_data="help_like")],
+        [InlineKeyboardButton("👤 Info", callback_data="help_info")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "🌟 *S.KANHAIYA BOT* 🌟\n\n"
+        "🔥 *Features:*\n"
+        "• 📊 Profile Visit\n"
+        "• ❤️ Send Likes\n"
+        "• 👤 Player Info\n\n"
+        "📌 *Commands:*\n"
+        "/start – Show menu\n"
+        "/visit `<region>` `<uid>` – Visit\n"
+        "/like `<region>` `<uid>` – Likes\n"
+        "/info `<region>` `<uid>` – Info\n\n"
+        f"⚡ *Powered by @S.KANHAIYA*",
+        parse_mode="Markdown",
+        reply_markup=reply_markup
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔧 *How to use this bot*\n\n"
+        "📊 *Visit:* `/visit IN 123456789`\n"
+        "❤️ *Like:* `/like IN 123456789`\n"
+        "👤 *Info:* `/info IN 123456789`\n\n"
+        "🌍 Regions: IN, BD, PK, USA, BR\n"
+        "⚠️ Daily limit: 2 likes\n\n"
+        f"⚡ *Powered by @S.KANHAIYA*",
+        parse_mode="Markdown"
+    )
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        f"📌 *Command Info*\n\n"
+        f"Use: `/{query.data.replace('help_', '')} <region> <uid>`\n"
+        f"Example: `/{query.data.replace('help_', '')} IN 123456789`",
+        parse_mode="Markdown"
+    )
+
+async def visit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 2:
-        await reply(update, "❌ *सही तरीका:* `/like REGION UID`")
+        await update.message.reply_text("❌ Use: `/visit IN 123456789`", parse_mode="Markdown")
         return
     
     region = context.args[0].upper()
-    uid = context.args[1]
-    if not uid.isdigit():
-        await reply(update, "❌ *UID में केवल नंबर होने चाहिए!*")
+    try:
+        uid = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("❌ UID must be a number!", parse_mode="Markdown")
+        return
+    
+    msg = await update.message.reply_text("⏳ *Processing Visit...*", parse_mode="Markdown")
+    result = await call_visit_api(region, uid)
+    
+    if "error" in result:
+        await msg.edit_text(f"🚫 *Error:* {result['error']}", parse_mode="Markdown")
+        return
+    
+    result['region'] = region
+    await msg.edit_text(format_visit_result(result), parse_mode="Markdown")
+
+async def like(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 2:
+        await update.message.reply_text("❌ Use: `/like IN 123456789`", parse_mode="Markdown")
+        return
+    
+    region = context.args[0].upper()
+    try:
+        uid = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("❌ UID must be a number!", parse_mode="Markdown")
         return
     
     user_id = update.effective_user.id
     if not can_user_like(user_id):
-        used = user_limits.get(user_id, {}).get('count', 0)
-        await reply(update, f"⚠️ *दैनिक सीमा समाप्त!*\nआप आज `{used}/{daily_limit}` लाइक्स का उपयोग कर चुके हैं।")
-        return
-    
-    proc_msg = await update.message.reply_text(
-        "┌─[ 👑 S.KANHAIYA LIKE BOT ]─🥷\n"
-        "│\n"
-        f"├─► 🔄 *प्रक्रिया जारी है...*\n"
-        f"├─► 🆔 यूआईडी: `{uid}`\n"
-        f"├─► 🌍 रीज़न: {region}\n"
-        "│\n"
-        "└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──", 
-        parse_mode='Markdown'
-    )
-    
-    data = await call_like_api(region, uid)
-    
-    if data is None or "error" in data:
-        await proc_msg.edit_text(
-            "┌─[ 👑 S.KANHAIYA LIKE BOT ]─🥷\n"
-            "│\n"
-            "├─► ❌ *[ERROR] API रेस्पॉन्स फेल*\n"
-            "│\n"
-            "└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──", 
-            parse_mode='Markdown'
+        await update.message.reply_text(
+            "❌ *Daily limit reached!*\nYou can send 2 likes per day.",
+            parse_mode="Markdown"
         )
         return
     
-    status = data.get('status')
-    player = data.get('PlayerNickname', 'Unknown')
-    before = data.get('LikesbeforeCommand', 0)
-    after = data.get('LikesafterCommand', 0)
-    given = data.get('LikesGivenByAPI', 0)
+    msg = await update.message.reply_text("⏳ *Processing Like...*", parse_mode="Markdown")
+    result = await call_like_api(region, uid)
     
-    if status == 1:
-        update_user_like(user_id)
-        result = (
-            f"┌─[ 👑 S.KANHAIYA LIKE BOT ]─🥷\n"
-            f"│\n"
-            f"├─► ✅ लाइक भेज दिया गया है 😍\n"
-            f"│\n"
-            f"├─► 👤 खिलाड़ी: {player}\n"
-            f"├─► 🆔 यूआईडी: `{uid}`\n"
-            f"├─► 🌍 रीज़न: {region}\n"
-            f"│\n"
-            f"├─► 📊 ओल्ड स्कोर: {before}\n"
-            f"├─► 🔄 न्यू स्कोर: {after}\n"
-            f"├─► ➕ प्लस लाइक: +{given}\n"
-            f"│\n"
-            f"└─[ ⚡️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
-        )
-        await proc_msg.edit_text(result, parse_mode='Markdown')
-        
+    if "error" in result:
+        await msg.edit_text(f"🚫 *Error:* {result['error']}", parse_mode="Markdown")
+        return
+    
+    update_user_like(user_id)
+    result['region'] = region
+    await msg.edit_text(format_like_result(result), parse_mode="Markdown")
+
+async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 2:
+        await update.message.reply_text("❌ Use: `/info IN 123456789`", parse_mode="Markdown")
+        return
+    
+    region = context.args[0].upper()
+    try:
+        uid = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("❌ UID must be a number!", parse_mode="Markdown")
+        return
+    
+    msg = await update.message.reply_text("⏳ *Fetching Player Info...*", parse_mode="Markdown")
+    result = await call_info_api(region, uid)
+    
+    if "error" in result:
+        await msg.edit_text(f"🚫 *Error:* {result['error']}", parse_mode="Markdown")
+        return
+    
+    final_msg = format_info_result(result)
+    if len(final_msg) > 4096:
+        await msg.edit_text(final_msg[:2000], parse_mode="Markdown")
+        await update.message.reply_text(final_msg[2000:4000], parse_mode="Markdown")
     else:
-        result = (
-            f"┌─[ 👑 S.KANHAIYA LIKE BOT ]─🥷\n"
-            f"│\n"
-            f"├─► ⚠️ [ERROR] लाइक नहीं भेजा जा सका\n"
-            f"│\n"
-            f"├─► 👤 खिलाड़ी: {player}\n"
-            f"├─► 🆔 यूआईडी: `{uid}`\n"
-            f"├─► 🌍 रीज़न: {region}\n"
-            f"│\n"
-            f"├─► 📊 ओल्ड स्कोर: {before}\n"
-            f"├─► 🔄 न्यू स्कोर: {after}\n"
-            f"├─► ➕ प्लस लाइक: {given}\n"
-            f"│\n"
-            f"└─[ ⚡️ ᴘᴏᴡᴇʀᴇ दें ʙʏ ᴋ.ʀ sᴇʀᴠɪᴄᴇ ]──"
-        )
-        keyboard = [[InlineKeyboardButton("Instagram Support", url="https://www.instagram.com/s.kanhaiya.7m")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await proc_msg.edit_text(result, parse_mode='Markdown', reply_markup=reply_markup)
+        await msg.edit_text(final_msg, parse_mode="Markdown")
 
-# ============ ADMIN COMMANDS ============
-async def allow_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    chat = update.effective_chat
-    allowed_groups[str(chat.id)] = {'name': chat.title, 'by': update.effective_user.id, 'date': today_str()}
-    save_all()
-    await reply(update, f"✅ *ग्रुप को अनुमति दे दी गई है*")
+# ============ TELEGRAM APP SETUP ============
+tg_app = Application.builder().token(BOT_TOKEN).build()
+tg_app.add_handler(CommandHandler("start", start))
+tg_app.add_handler(CommandHandler("help", help_command))
+tg_app.add_handler(CommandHandler("visit", visit))
+tg_app.add_handler(CommandHandler("like", like))
+tg_app.add_handler(CommandHandler("info", info))
+tg_app.add_handler(CallbackQueryHandler(button_handler))
 
-async def off_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    global bot_status; bot_status = "off"; save_all()
-    await reply(update, "🔴 *बॉट बंद है*")
+# ============ FLASK ROUTES ============
 
-async def on_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    global bot_status; bot_status = "on"; save_all()
-    await reply(update, "🟢 *बॉट चालू है*")
-
-async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    t = today_str()
-    if t not in daily_stats: return
-    await reply(update, f"📊 कुल लाइक: `{daily_stats[t]['total']}`")
-
-async def set_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    global bot_mode; bot_mode = "private"; save_all()
-    await reply(update, "🔒 *प्राइवेट मोड चालू*")
-
-async def set_public(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    global bot_mode; bot_mode = "public"; save_all()
-    await reply(update, "🌍 *पब्लिक मोड चालू*")
-
-async def set_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    if len(context.args) != 1 or not context.args[0].isdigit(): return
-    global daily_limit; daily_limit = int(context.args[0]); save_all()
-    await reply(update, f"✅ सीमा `{daily_limit}` की गई")
-
-def setup_handlers(app_instance):
-    app_instance.add_handler(CommandHandler("start", start))
-    app_instance.add_handler(CommandHandler("help", help_cmd))
-    app_instance.add_handler(CommandHandler("info", info_cmd))
-    app_instance.add_handler(CommandHandler("like", like_cmd))
-    app_instance.add_handler(CommandHandler("allow", allow_group))
-    app_instance.add_handler(CommandHandler("off", off_cmd))
-    app_instance.add_handler(CommandHandler("on", on_cmd))
-    app_instance.add_handler(CommandHandler("stats", stats_cmd))
-    app_instance.add_handler(CommandHandler("setprivate", set_private))
-    app_instance.add_handler(CommandHandler("setpublic", set_public))
-    app_instance.add_handler(CommandHandler("setlimit", set_limit))
-
-@app.route('/api/bot-webhook', methods=['POST'])
+@app.route('/api/webhook', methods=['POST'])
 def webhook():
-    load_data()
-    if request.method == "POST":
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            if not tg_app.handlers:
-                setup_handlers(tg_app)
-            update = Update.de_json(request.get_json(force=True), tg_app.bot)
-            loop.run_until_complete(tg_app.initialize())
-            loop.run_until_complete(tg_app.process_update(update))
-            return jsonify({"status": "ok"}), 200
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    return jsonify({"status": "failed"}), 405
+    try:
+        data = request.get_json(force=True)
+        update = Update.de_json(data, tg_app.bot)
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(tg_app.initialize())
+        loop.run_until_complete(tg_app.process_update(update))
+        
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/')
-def home(): return "Bot Running!"
+def home():
+    return "🚀 S.KANHAIYA BOT is running on Vercel!"
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
+
+# ============ FOR VERCEL ============
+# Vercel will use this as the entry point
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
