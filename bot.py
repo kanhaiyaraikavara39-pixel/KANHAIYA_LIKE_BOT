@@ -13,7 +13,7 @@ INFO_API_URL = "https://s-kanhaiya-ff-info.vercel.app/player-info"
 ENCODED_KEY = "WkVYWFk="
 API_KEY = base64.b64decode(ENCODED_KEY).decode()
 
-BOT_TOKEN = "8437758795:AAFbeCsPUT4DkFMBsaa_ibPK4IeWwzS5yJc"
+BOT_TOKEN = "8752690086:AAGEdWri8qtC6vHw2wHDObUmWmoa-hyyh-M"
 ADMIN_IDS = [7890824548]
 
 DATA_FILES = {
