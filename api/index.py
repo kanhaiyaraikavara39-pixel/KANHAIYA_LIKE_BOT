@@ -19,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============ BOT & ADMIN CONFIGURATIONS ============
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8752690086:AAGEdWri8qtC6vHw2wHDObUmWmoa-hyyh-M")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8752690086:AAHTtttHx7RxH3SsyecC2nl-D5nKN-wX-9U")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7890824548"))  # अपनी टेलीग्राम एडमिन आईडी
 
 # ============ API CONFIGURATIONS ============
