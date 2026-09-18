@@ -7,7 +7,13 @@ import json
 import random
 from datetime import date, datetime
 from fastapi import FastAPI, Request, Response
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton
+)
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -36,14 +42,15 @@ ENCODED_KEY = "WkVYWFk="
 API_KEY = base64.b64decode(ENCODED_KEY).decode()
 INFO_API_URL = "https://s-kanhaiya-ff-info.vercel.app/player-info"
 
-# अनिवार्य चैनल्स व ग्रुप्स (हमेशा सक्रिय)
-REQUIRED_CHANNELS = ["@KANHAIYA_VIP", "@kanhaiyaanjj"]
+# अनिवार्य चैनल और ग्रुप
+CHANNEL_USERNAME = "@KANHAIYA_VIP"
+GROUP_USERNAME = "@kanhaiyaanjj"
+BROADCAST_CHANNEL = "@KANHAIYA_VIP"
 
 # ============ PERSISTENT STORAGE (/tmp/) ============
 STORAGE_FILE = "/tmp/kanhaiya_bot_data.json"
 
 def load_storage():
-    """Vercel /tmp स्टोरेज से डेटा लोड करें"""
     default_data = {
         "languages": {},       # {user_id: "en" / "hi"}
         "user_limits": {},     # {user_id: {"date": "...", "count": 0}}
@@ -63,12 +70,38 @@ def load_storage():
         return default_data
 
 def save_storage(data):
-    """Vercel /tmp स्टोरेज में डेटा सेव करें"""
     try:
         with open(STORAGE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error(f"Error saving storage: {e}")
+
+# ============ KEYBOARDS (नीचे दिखने वाले बटन) ============
+def get_main_reply_keyboard(user_id):
+    """कीबोर्ड के नीचे हमेशा दिखने वाले बटन"""
+    if user_id == ADMIN_ID:
+        kb = [
+            [KeyboardButton("📊 Visit"), KeyboardButton("❤️ Like"), KeyboardButton("👤 Info")],
+            [KeyboardButton("🔑 Generate Key"), KeyboardButton("📢 Broadcast / Send")],
+            [KeyboardButton("🌐 Language"), KeyboardButton("📖 Help")]
+        ]
+    else:
+        kb = [
+            [KeyboardButton("📊 Visit"), KeyboardButton("❤️ Like")],
+            [KeyboardButton("👤 Info"), KeyboardButton("🌐 Language")],
+            [KeyboardButton("📖 Help")]
+        ]
+    return ReplyKeyboardMarkup(kb, resize_keyboard=True)
+
+def get_join_verification_markup():
+    """चैनल/ग्रुप लिंक्स और इनलाइन वेरीफाई बटन"""
+    keyboard = [
+        [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}")],
+        [InlineKeyboardButton("💬 Join Group", url=f"https://t.me/{GROUP_USERNAME.replace('@', '')}")],
+        [InlineKeyboardButton("✅ Verify / अनलॉक करें", callback_data="verify_membership")],
+        [InlineKeyboardButton("🌐 Change Language", callback_data="open_lang_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 # ============ MULTI-LANGUAGE SYSTEM ============
 MESSAGES = {
@@ -86,11 +119,11 @@ MESSAGES = {
             "┃ • 👤 Player Info\n"
             "┃ • 🌐 Language Switch\n"
             "┃                        \n"
-            "┃ 📌 *Commands:*\n"
+            "┃ 📌 *How to use:*\n"
+            "┃ Use the buttons below or send:\n"
             "┃ `/visit <region> <uid>`\n"
             "┃ `/like <region> <uid>`\n"
             "┃ `/info <region> <uid>`\n"
-            "┃ `/language` - Switch Lang\n"
             "┃                        \n"
             "┃ ══════════════════════ \n"
             "┃ 💫 @KANHAIYA_VIP 💫   \n"
@@ -106,22 +139,23 @@ MESSAGES = {
             "⚡ *Powered by @KANHAIYA_VIP*"
         ),
         "lock_msg": (
-            "🔒 *ACCESS LOCKED!*\n\n"
-            "To unlock the bot, follow these steps:\n"
+            "🔒 *BOT ACCESS LOCKED!*\n\n"
+            "To unlock the bot:\n"
             "1. Join our Official Channel and Group below.\n"
-            "2. Collect today's secret password (posted daily).\n"
-            "3. Send the password here (e.g. `KRL-123`) to unlock!"
+            "2. Collect today's secret password (e.g. `KRL-123`).\n"
+            "3. Send the password in chat, OR join and tap **Verify** below!"
         ),
         "verified_success": "🎉 *Authentication Successful!*\nBot unlocked for today. Enjoy all features!",
         "invalid_pass": "❌ *Invalid Password!*\nPlease check the latest password on @KANHAIYA_VIP and try again.",
         "join_both_first": "⚠️ *Please join both the Channel and Group first!*",
+        "enter_password_prompt": "🔑 *Channel & Group verified!*\nNow please type and send today's secret password (e.g., `KRL-XXX`) in chat to unlock.",
         "daily_limit": "❌ *Daily limit reached!*\nYou can send up to 2 likes per day.",
         "invalid_uid": "❌ UID must contain numbers only!",
         "usage_visit": "❌ Usage: `/visit IN 123456789`",
         "usage_like": "❌ Usage: `/like IN 123456789`",
         "usage_info": "❌ Usage: `/info IN 123456789`",
         "choose_lang": "🌐 *Choose your preferred language:*",
-        "lang_set": "✅ Language successfully set to **English 🇬🇧**."
+        "lang_set": "✅ Language set to **English 🇬🇧**."
     },
     "hi": {
         "welcome": (
@@ -137,11 +171,11 @@ MESSAGES = {
             "┃ • 👤 प्लेयर विवरण निकालें\n"
             "┃ • 🌐 भाषा बदलने का विकल्प\n"
             "┃                        \n"
-            "┃ 📌 *कमांड्स:*\n"
+            "┃ 📌 *उपयोग कैसे करें:*\n"
+            "┃ नीचे दिए कीबोर्ड बटन दबाएं या लिखें:\n"
             "┃ `/visit <region> <uid>`\n"
             "┃ `/like <region> <uid>`\n"
             "┃ `/info <region> <uid>`\n"
-            "┃ `/language` - भाषा बदलें\n"
             "┃                        \n"
             "┃ ══════════════════════ \n"
             "┃ 💫 @KANHAIYA_VIP 💫   \n"
@@ -158,27 +192,28 @@ MESSAGES = {
         ),
         "lock_msg": (
             "🔒 *बॉट लॉक है!*\n\n"
-            "बॉट अनलॉक करने के लिए ये स्टेप्स पूरे करें:\n"
+            "बॉट अनलॉक करने के लिए:\n"
             "1. नीचे दिए गए चैनल और ग्रुप दोनों जॉइन करें।\n"
-            "2. वहाँ पोस्ट किया गया आज का सीक्रेट पासवर्ड देखें।\n"
-            "3. वह पासवर्ड यहाँ भेजें (जैसे `KRL-123`) और बॉट अनलॉक करें!"
+            "2. चैनल से आज का सीक्रेट पासवर्ड देखें (जैसे `KRL-123`)।\n"
+            "3. वह पासवर्ड यहाँ चैट में भेजें, या जॉइन करके **Verify** बटन दबाएं!"
         ),
-        "verified_success": "🎉 *सत्यापन सफल रहा!*\nबॉट आज के लिए अनलॉक हो चुका है। अब आप सभी फीचर्स का इस्तेमाल कर सकते हैं!",
+        "verified_success": "🎉 *सत्यापन सफल रहा!*\nबॉट आज के लिए अनलॉक हो चुका है।",
         "invalid_pass": "❌ *गलत पासवर्ड!*\nकृपया @KANHAIYA_VIP पर पोस्ट किया गया आज का सही पासवर्ड डालें।",
         "join_both_first": "⚠️ *कृपया पहले चैनल और ग्रुप दोनों जॉइन करें!*",
+        "enter_password_prompt": "🔑 *चैनल और ग्रुप सत्यापित हो गए!*\nअब बॉट अनलॉक करने के लिए आज का पासवर्ड (उदा: `KRL-XXX`) चैट में लिखकर भेजें।",
         "daily_limit": "❌ *दैनिक सीमा समाप्त!*\nआप प्रतिदिन केवल 2 लाइक्स भेज सकते हैं।",
-        "invalid_uid": "❌ UID में केवल संख्या (डिजिट) होनी चाहिए!",
+        "invalid_uid": "❌ UID में केवल संख्या होनी चाहिए!",
         "usage_visit": "❌ उपयोग: `/visit IN 123456789`",
         "usage_like": "❌ उपयोग: `/like IN 123456789`",
         "usage_info": "❌ उपयोग: `/info IN 123456789`",
         "choose_lang": "🌐 *अपनी पसंदीदा भाषा चुनें:*",
-        "lang_set": "✅ आपकी भाषा सफलतापूर्वक **हिंदी 🇮🇳** सेट कर दी गई है।"
+        "lang_set": "✅ आपकी भाषा **हिंदी 🇮🇳** सेट कर दी गई है।"
     }
 }
 
 def get_user_lang(user_id):
     storage = load_storage()
-    return storage["languages"].get(str(user_id), "en")
+    return storage["languages"].get(str(user_id), "hi")
 
 def set_user_lang(user_id, lang):
     storage = load_storage()
@@ -187,11 +222,10 @@ def set_user_lang(user_id, lang):
 
 def get_text(user_id, key):
     lang = get_user_lang(user_id)
-    return MESSAGES.get(lang, MESSAGES["en"]).get(key, "")
+    return MESSAGES.get(lang, MESSAGES["hi"]).get(key, "")
 
 # ============ 24-HOUR DYNAMIC PASSWORD GENERATOR ============
 def format_broadcast_password_post(password):
-    """चैनल और ग्रुप में पोस्ट होने वाला आकर्षक इंग्लिश लेआउट"""
     return (
         "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
         "┃   👑 ✦ S.KANHAIYA BOT ✦ 👑 ┃\n"
@@ -209,12 +243,10 @@ def format_broadcast_password_post(password):
     )
 
 async def check_and_rotate_password(bot):
-    """जांचें कि क्या नया दिन शुरू हुआ है; यदि हाँ, तो नया पासवर्ड बनाकर चैनल/ग्रुप में भेजें"""
     storage = load_storage()
     today = str(date.today())
     
     if storage["daily_key"].get("date") != today:
-        # KRL- के बाद 3 अंकों का नया रैंडम नंबर
         random_num = random.randint(100, 999)
         new_password = f"KRL-{random_num}"
         
@@ -222,23 +254,20 @@ async def check_and_rotate_password(bot):
         storage["daily_key"]["password"] = new_password
         save_storage(storage)
         
-        # चैनल और ग्रुप में ऑटो-पोस्ट करें
         post_message = format_broadcast_password_post(new_password)
-        for target in REQUIRED_CHANNELS:
-            try:
-                await bot.send_message(chat_id=target, text=post_message, parse_mode="Markdown")
-                logger.info(f"Password posted to {target}")
-            except Exception as e:
-                logger.error(f"Failed to post daily password to {target}: {e}")
+        try:
+            await bot.send_message(chat_id=BROADCAST_CHANNEL, text=post_message, parse_mode="Markdown")
+            logger.info("Password posted to Channel")
+        except Exception as e:
+            logger.error(f"Failed to post daily password to {BROADCAST_CHANNEL}: {e}")
                 
     return storage["daily_key"]["password"]
 
 # ============ VERIFICATION HELPERS ============
 async def is_member_of_all(bot, user_id):
-    """जांचें कि यूजर चैनल और ग्रुप दोनों का मेंबर है या नहीं"""
     if user_id == ADMIN_ID:
         return True
-    for ch in REQUIRED_CHANNELS:
+    for ch in [CHANNEL_USERNAME, GROUP_USERNAME]:
         try:
             member = await bot.get_chat_member(chat_id=ch, user_id=user_id)
             if member.status in ["left", "kicked"]:
@@ -248,7 +277,6 @@ async def is_member_of_all(bot, user_id):
     return True
 
 def is_user_unlocked(user_id):
-    """जांचें कि क्या यूजर आज के दिन वेरिफाइड है"""
     if user_id == ADMIN_ID:
         return True
     storage = load_storage()
@@ -259,13 +287,6 @@ def unlock_user_for_today(user_id):
     storage = load_storage()
     storage["verified_users"][str(user_id)] = str(date.today())
     save_storage(storage)
-
-def get_join_buttons():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Join Channel", url="https://t.me/KANHAIYA_VIP")],
-        [InlineKeyboardButton("💬 Join Group", url="https://t.me/kanhaiyaanjj")],
-        [InlineKeyboardButton("🌐 Change Language", callback_data="open_lang_menu")]
-    ])
 
 # ============ ADMIN ACTIVITY ALERT ============
 async def notify_admin(context: ContextTypes.DEFAULT_TYPE, user, command_text):
@@ -526,30 +547,35 @@ async def call_info_api(region, uid):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await notify_admin(context, user, "/start")
-    await check_and_rotate_password(context.bot)
+    
+    try:
+        await check_and_rotate_password(context.bot)
+    except Exception as e:
+        logger.error(f"Rotation error: {e}")
 
-    # अगर अनलॉक नहीं है तो लॉक संदेश भेजें
+    # यदि यूज़र अनलॉक्ड नहीं है
     if not is_user_unlocked(user.id):
         await update.message.reply_text(
             get_text(user.id, "lock_msg"),
             parse_mode="Markdown",
-            reply_markup=get_join_buttons()
+            reply_markup=get_join_verification_markup()
         )
         return
 
-    keyboard = [
-        [InlineKeyboardButton("📊 Visit", callback_data="help_visit"), InlineKeyboardButton("❤️ Likes", callback_data="help_like")],
-        [InlineKeyboardButton("👤 Info", callback_data="help_info"), InlineKeyboardButton("🌐 Language", callback_data="open_lang_menu")]
-    ]
-    await update.message.reply_text(get_text(user.id, "welcome"), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    welcome_text = get_text(user.id, "welcome")
+    await update.message.reply_text(
+        welcome_text,
+        parse_mode="Markdown",
+        reply_markup=get_main_reply_keyboard(user.id)
+    )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await notify_admin(context, user, "/help")
     if not is_user_unlocked(user.id):
-        await update.message.reply_text(get_text(user.id, "lock_msg"), parse_mode="Markdown", reply_markup=get_join_buttons())
+        await update.message.reply_text(get_text(user.id, "lock_msg"), parse_mode="Markdown", reply_markup=get_join_verification_markup())
         return
-    await update.message.reply_text(get_text(user.id, "help"), parse_mode="Markdown")
+    await update.message.reply_text(get_text(user.id, "help"), parse_mode="Markdown", reply_markup=get_main_reply_keyboard(user.id))
 
 async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -563,10 +589,9 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def visit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await notify_admin(context, user, f"/visit {' '.join(context.args)}")
-    await check_and_rotate_password(context.bot)
     
     if not is_user_unlocked(user.id):
-        await update.message.reply_text(get_text(user.id, "lock_msg"), parse_mode="Markdown", reply_markup=get_join_buttons())
+        await update.message.reply_text(get_text(user.id, "lock_msg"), parse_mode="Markdown", reply_markup=get_join_verification_markup())
         return
 
     if len(context.args) != 2:
@@ -590,10 +615,9 @@ async def visit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def like(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await notify_admin(context, user, f"/like {' '.join(context.args)}")
-    await check_and_rotate_password(context.bot)
 
     if not is_user_unlocked(user.id):
-        await update.message.reply_text(get_text(user.id, "lock_msg"), parse_mode="Markdown", reply_markup=get_join_buttons())
+        await update.message.reply_text(get_text(user.id, "lock_msg"), parse_mode="Markdown", reply_markup=get_join_verification_markup())
         return
 
     if len(context.args) != 2:
@@ -623,10 +647,9 @@ async def like(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await notify_admin(context, user, f"/info {' '.join(context.args)}")
-    await check_and_rotate_password(context.bot)
 
     if not is_user_unlocked(user.id):
-        await update.message.reply_text(get_text(user.id, "lock_msg"), parse_mode="Markdown", reply_markup=get_join_buttons())
+        await update.message.reply_text(get_text(user.id, "lock_msg"), parse_mode="Markdown", reply_markup=get_join_verification_markup())
         return
 
     if len(context.args) != 2:
@@ -652,28 +675,54 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await loading_msg.edit_text(final_msg, parse_mode="Markdown")
 
-# ============ PASSWORD SUBMISSION HANDLER ============
+# ============ TEXT & BUTTON INPUT HANDLER ============
 async def handle_user_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """यूजर द्वारा भेजा गया पासवर्ड या टेक्स्ट चेक करें"""
+    """कीबोर्ड बटन क्लिक या टेक्स्ट/पासवर्ड को प्रोसेस करें"""
     user = update.effective_user
     text = update.message.text.strip()
-    
-    # अगर यूजर पहले से अनलॉक है
+
+    # 1. कीबोर्ड बटन्स का रिस्पॉन्स
+    if text in ["📊 Visit", "/visit"]:
+        await update.message.reply_text(get_text(user.id, "usage_visit"), parse_mode="Markdown")
+        return
+    elif text in ["❤️ Like", "/like"]:
+        await update.message.reply_text(get_text(user.id, "usage_like"), parse_mode="Markdown")
+        return
+    elif text in ["👤 Info", "/info"]:
+        await update.message.reply_text(get_text(user.id, "usage_info"), parse_mode="Markdown")
+        return
+    elif text in ["🌐 Language", "/language"]:
+        await language_command(update, context)
+        return
+    elif text in ["📖 Help", "/help"]:
+        await help_command(update, context)
+        return
+    elif text == "🔑 Generate Key" and user.id == ADMIN_ID:
+        await force_generate_password(update, context)
+        return
+    elif text == "📢 Broadcast / Send" and user.id == ADMIN_ID:
+        await update.message.reply_text("📌 उपयोग: `/send <USER_ID> <मैसेज>`", parse_mode="Markdown")
+        return
+
+    # 2. अगर यूजर पहले से अनलॉक है तो सामान्य टेक्स्ट पर कुछ न करें
     if is_user_unlocked(user.id):
         return
 
-    await notify_admin(context, user, f"Password Attempt: {text}")
+    # 3. पासवर्ड चेकिंग
+    await notify_admin(context, user, f"Key Attempt: {text}")
     current_pass = await check_and_rotate_password(context.bot)
 
-    # पासवर्ड मैचिंग
     if text.upper() == current_pass.upper():
-        # जांचें कि यूजर ने दोनों जॉइन किए हैं
         if not await is_member_of_all(context.bot, user.id):
-            await update.message.reply_text(get_text(user.id, "join_both_first"), parse_mode="Markdown", reply_markup=get_join_buttons())
+            await update.message.reply_text(
+                get_text(user.id, "join_both_first"),
+                parse_mode="Markdown",
+                reply_markup=get_join_verification_markup()
+            )
             return
 
         unlock_user_for_today(user.id)
-        await update.message.reply_text(get_text(user.id, "verified_success"), parse_mode="Markdown")
+        await update.message.reply_text(get_text(user.id, "verified_success"), parse_mode="Markdown", reply_markup=get_main_reply_keyboard(user.id))
         await start(update, context)
     else:
         if text.upper().startswith("KRL-"):
@@ -681,7 +730,7 @@ async def handle_user_text_message(update: Update, context: ContextTypes.DEFAULT
 
 # ============ ADMIN EXCLUSIVE COMMANDS ============
 async def send_dm_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """एडमिन द्वारा किसी यूजर को संदेश भेजना: /send <user_id> <message>"""
+    """एडमिन द्वारा किसी यूजर को मैसेज भेजना: /send <user_id> <message>"""
     if update.effective_user.id != ADMIN_ID:
         return
     if len(context.args) < 2:
@@ -700,7 +749,7 @@ async def send_dm_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🚫 Failed to send: {e}")
 
 async def force_generate_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """एडमिन द्वारा तुरंत नया पासवर्ड जनरेट और ब्रॉडकास्ट करना: /newpass"""
+    """एडमिन द्वारा तुरंत नया पासवर्ड बनाना व चैनल पर पोस्ट करना: /newpass"""
     if update.effective_user.id != ADMIN_ID:
         return
     random_num = random.randint(100, 999)
@@ -711,12 +760,16 @@ async def force_generate_password(update: Update, context: ContextTypes.DEFAULT_
     save_storage(storage)
 
     post_message = format_broadcast_password_post(new_password)
-    for target in REQUIRED_CHANNELS:
-        try:
-            await context.bot.send_message(chat_id=target, text=post_message, parse_mode="Markdown")
-        except Exception as e:
-            logger.error(f"Error posting: {e}")
-    await update.message.reply_text(f"✅ New Key Generated & Broadcasted: `{new_password}`", parse_mode="Markdown")
+    try:
+        await context.bot.send_message(chat_id=BROADCAST_CHANNEL, text=post_message, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error posting: {e}")
+        
+    await update.message.reply_text(
+        f"✅ New Key Generated & Posted to {BROADCAST_CHANNEL}:\n`{new_password}`",
+        parse_mode="Markdown",
+        reply_markup=get_main_reply_keyboard(ADMIN_ID)
+    )
 
 # ============ CALLBACK QUERY HANDLER ============
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -726,7 +779,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     await query.answer()
 
-    if data == "open_lang_menu":
+    if data == "verify_membership":
+        # पहले चैनल और ग्रुप की सदस्यता चेक करें
+        if not await is_member_of_all(context.bot, user_id):
+            await query.answer(get_text(user_id, "join_both_first"), show_alert=True)
+            return
+        
+        # यदि दोनों जॉइन हैं तो पासवर्ड दर्ज करने को कहें
+        await query.message.reply_text(
+            get_text(user_id, "enter_password_prompt"),
+            parse_mode="Markdown"
+        )
+
+    elif data == "open_lang_menu":
         keyboard = [
             [InlineKeyboardButton("🇮🇳 हिन्दी", callback_data="set_lang_hi")],
             [InlineKeyboardButton("🇬🇧 English", callback_data="set_lang_en")]
@@ -743,20 +808,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(get_text(user_id, "lang_set"), parse_mode="Markdown")
         await start(update, context)
 
-    elif data.startswith("help_"):
-        cmd = data.replace("help_", "")
-        await query.edit_message_text(
-            f"📌 *Command Info*\n\n"
-            f"Use: `/{cmd} <region> <uid>`\n"
-            f"Example: `/{cmd} IN 123456789`",
-            parse_mode="Markdown"
-        )
-
 # ============ VERCEL FASTAPI INTEGRATION ============
 app = FastAPI()
 ptb_application = Application.builder().token(BOT_TOKEN).build()
 
-# कमांड हैंडलर्स
+# कमांड्स
 ptb_application.add_handler(CommandHandler("start", start))
 ptb_application.add_handler(CommandHandler("help", help_command))
 ptb_application.add_handler(CommandHandler("language", language_command))
@@ -764,12 +820,12 @@ ptb_application.add_handler(CommandHandler("visit", visit))
 ptb_application.add_handler(CommandHandler("like", like))
 ptb_application.add_handler(CommandHandler("info", info))
 
-# एडमिन हैंडलर्स
+# एडमिन कमांड्स
 ptb_application.add_handler(CommandHandler("send", send_dm_to_user))
 ptb_application.add_handler(CommandHandler("msg", send_dm_to_user))
 ptb_application.add_handler(CommandHandler("newpass", force_generate_password))
 
-# बटन व पासवर्ड मैसेज हैंडलर
+# इनलाइन व टेक्स्ट मैसेज हैंडलर्स
 ptb_application.add_handler(CallbackQueryHandler(button_handler))
 ptb_application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_text_message))
 
