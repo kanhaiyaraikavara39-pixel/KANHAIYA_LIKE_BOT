@@ -5,7 +5,7 @@ import asyncio
 import base64
 import json
 import random
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from fastapi import FastAPI, Request, Response
 from telegram import (
     Update,
@@ -26,7 +26,7 @@ from telegram.error import TelegramError
 
 # ============ LOGGING CONFIGURATION ============
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
@@ -34,6 +34,13 @@ logger = logging.getLogger(__name__)
 # ============ CONFIGURATIONS ============
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8752690086:AAHTtttHx7RxH3SsyecC2nl-D5nKN-wX-9U")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7890824548"))
+
+# Auto-like के लिए game UID
+AUTO_LIKE_UID = "9230844760"
+
+# Telegram-based persistent storage (private channel ID)
+# अगर खाली रखेंगे तो in-memory fallback होगा (restart पर reset)
+STORAGE_CHAT_ID = os.getenv("STORAGE_CHAT_ID", "")
 
 # गेम एपीआई
 VISIT_API_URL = "https://kanhaiya-vvvvbvvb.vercel.app/"
@@ -47,45 +54,108 @@ CHANNEL_USERNAME = "@KANHAIYA_VIP"
 GROUP_USERNAME = "@kanhaiyaanjj"
 BROADCAST_CHANNEL = "@KANHAIYA_VIP"
 
-# ============ PERSISTENT STORAGE (/tmp/) ============
-STORAGE_FILE = "/tmp/kanhaiya_bot_data.json"
+# Default region (admin बदल सकता है)
+DEFAULT_REGION = "ind"
+
+# ============ IN-MEMORY STATE ============
+# यह in-memory cache है — Telegram storage से sync होता रहेगा
+_STATE = {
+    "languages": {},
+    "user_limits": {},
+    "verified_users": {},
+    "extra_channels": [],
+    "region": DEFAULT_REGION,
+    "maintenance": False,
+    "last_auto_like_date": "",
+    "storage_msg_id": None,   # Telegram storage message का ID
+    "loaded": False
+}
+
+# ============ STORAGE HELPERS (Telegram-based) ============
+async def load_storage_from_telegram(bot):
+    """Telegram storage channel से settings load करें"""
+    if not STORAGE_CHAT_ID:
+        _STATE["loaded"] = True
+        return
+    try:
+        # channel history से पिछला storage message ढूंढें
+        # Telegram Bot API में direct "history" नहीं मिलती, तो हम
+        # अपनी एक fixed approach use करेंगे: bot एक pinned message रखेगा
+        # या हम channel description नहीं पढ़ सकते — इसलिए हम "saved message id"
+        # को बार-बार update करेंगे और startup पर pinned message पढ़ेंगे।
+        try:
+            chat = await bot.get_chat(STORAGE_CHAT_ID)
+            pinned = chat.pinned_message
+            if pinned and pinned.text:
+                data = json.loads(pinned.text)
+                _STATE.update(data)
+                _STATE["storage_msg_id"] = pinned.message_id
+                logger.info("Storage loaded from pinned message.")
+        except Exception as e:
+            logger.warning(f"Could not load pinned storage: {e}")
+        _STATE["loaded"] = True
+    except Exception as e:
+        logger.error(f"load_storage_from_telegram error: {e}")
+        _STATE["loaded"] = True
+
+async def save_storage_to_telegram(bot):
+    """Telegram storage channel में settings save करें"""
+    if not STORAGE_CHAT_ID:
+        return
+    try:
+        payload = {
+            "languages": _STATE["languages"],
+            "user_limits": _STATE["user_limits"],
+            "verified_users": _STATE["verified_users"],
+            "extra_channels": _STATE["extra_channels"],
+            "region": _STATE["region"],
+            "maintenance": _STATE["maintenance"],
+            "last_auto_like_date": _STATE["last_auto_like_date"],
+        }
+        text = json.dumps(payload, ensure_ascii=False)
+        if _STATE.get("storage_msg_id"):
+            try:
+                await bot.edit_message_text(
+                    chat_id=STORAGE_CHAT_ID,
+                    message_id=_STATE["storage_msg_id"],
+                    text=text
+                )
+                return
+            except TelegramError as e:
+                logger.warning(f"Edit failed, will send new: {e}")
+        # नया message भेजें और pin करें
+        msg = await bot.send_message(chat_id=STORAGE_CHAT_ID, text=text)
+        _STATE["storage_msg_id"] = msg.message_id
+        try:
+            await bot.pin_chat_message(
+                chat_id=STORAGE_CHAT_ID,
+                message_id=msg.message_id,
+                disable_notification=True
+            )
+        except TelegramError:
+            pass
+    except Exception as e:
+        logger.error(f"save_storage_to_telegram error: {e}")
 
 def load_storage():
-    default_data = {
-        "languages": {},       # {user_id: "en" / "hi"}
-        "user_limits": {},     # {user_id: {"date": "...", "count": 0}}
-        "verified_users": {},  # {user_id: true}  → permanent unlock
-        "extra_channels": []   # admin द्वारा जोड़े गए अतिरिक्त चैनल/ग्रुप
-    }
-    if not os.path.exists(STORAGE_FILE):
-        return default_data
-    try:
-        with open(STORAGE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            # backward compatibility
-            if "extra_channels" not in data:
-                data["extra_channels"] = []
-            if "verified_users" not in data:
-                data["verified_users"] = {}
-            return data
-    except Exception as e:
-        logger.error(f"Error loading storage: {e}")
-        return default_data
+    """Sync in-memory accessor (backward compatible)"""
+    return _STATE
 
 def save_storage(data):
-    try:
-        with open(STORAGE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error saving storage: {e}")
+    """Sync no-op — असली save telegram पर async होता है"""
+    if data is not _STATE:
+        _STATE.update(data)
 
-# ============ KEYBOARDS (नीचे दिखने वाले बटन) ============
+async def persist(bot):
+    await save_storage_to_telegram(bot)
+
+# ============ KEYBOARDS ============
 def get_main_reply_keyboard(user_id):
-    """कीबोर्ड के नीचे हमेशा दिखने वाले बटन"""
     if user_id == ADMIN_ID:
         kb = [
             [KeyboardButton("📊 Visit"), KeyboardButton("❤️ Like"), KeyboardButton("👤 Info")],
             [KeyboardButton("📢 Broadcast / Send"), KeyboardButton("➕ Add Channel")],
+            [KeyboardButton("🌍 Region"), KeyboardButton("🔧 Maintenance")],
             [KeyboardButton("🌐 Language"), KeyboardButton("📖 Help")]
         ]
     else:
@@ -97,21 +167,15 @@ def get_main_reply_keyboard(user_id):
     return ReplyKeyboardMarkup(kb, resize_keyboard=True)
 
 def get_join_verification_markup(user_id=None):
-    """चैनल/ग्रुप लिंक्स और इनलाइन वेरीफाई बटन"""
     keyboard = [
         [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}")],
         [InlineKeyboardButton("💬 Join Group", url=f"https://t.me/{GROUP_USERNAME.replace('@', '')}")]
     ]
-    # अतिरिक्त चैनल्स जोड़ें (अगर एडमिन ने add किए हैं)
-    try:
-        storage = load_storage()
-        for ch in storage.get("extra_channels", []):
-            name = ch.get("name", "Channel")
-            link = ch.get("link", "")
-            if link:
-                keyboard.append([InlineKeyboardButton(f"➕ {name}", url=link)])
-    except Exception:
-        pass
+    for ch in _STATE.get("extra_channels", []):
+        name = ch.get("name", "Channel")
+        link = ch.get("link", "")
+        if link:
+            keyboard.append([InlineKeyboardButton(f"➕ {name}", url=link)])
 
     keyboard.append([InlineKeyboardButton("✅ Verify / अनलॉक करें", callback_data="verify_membership")])
     keyboard.append([InlineKeyboardButton("🌐 Change Language", callback_data="open_lang_menu")])
@@ -134,10 +198,9 @@ MESSAGES = {
             "┃ • 🌐 Language Switch\n"
             "┃                        \n"
             "┃ 📌 *How to use:*\n"
-            "┃ Use the buttons below or send:\n"
-            "┃ `/visit <region> <uid>`\n"
-            "┃ `/like <region> <uid>`\n"
-            "┃ `/info <region> <uid>`\n"
+            "┃ `/visit <uid>`\n"
+            "┃ `/like <uid>`\n"
+            "┃ `/info <uid>`\n"
             "┃                        \n"
             "┃ ══════════════════════ \n"
             "┃ 💫 @KANHAIYA_VIP 💫   \n"
@@ -145,10 +208,10 @@ MESSAGES = {
         ),
         "help": (
             "🔧 *Command Guide:*\n\n"
-            "📊 *Visit:* `/visit IN 123456789`\n"
-            "❤️ *Like:* `/like IN 123456789`\n"
-            "👤 *Info:* `/info IN 123456789`\n\n"
-            "🌍 *Regions:* IN, BD, PK, USA, BR\n"
+            "📊 *Visit:* `/visit 123456789`\n"
+            "❤️ *Like:* `/like 123456789`\n"
+            "👤 *Info:* `/info 123456789`\n\n"
+            "🌍 *Server:* Indian (IND) — Automatic\n"
             "⚠️ *Daily Limit:* 2 likes\n\n"
             "⚡ *Powered by @KANHAIYA_VIP*"
         ),
@@ -163,11 +226,17 @@ MESSAGES = {
         "join_both_first": "⚠️ *Please join both the Channel and Group first!*",
         "daily_limit": "❌ *Daily limit reached!*\nYou can send up to 2 likes per day.",
         "invalid_uid": "❌ UID must contain numbers only!",
-        "usage_visit": "❌ Usage: `/visit IN 123456789`",
-        "usage_like": "❌ Usage: `/like IN 123456789`",
-        "usage_info": "❌ Usage: `/info IN 123456789`",
+        "usage_visit": "❌ Usage: `/visit 123456789`",
+        "usage_like": "❌ Usage: `/like 123456789`",
+        "usage_info": "❌ Usage: `/info 123456789`",
         "choose_lang": "🌐 *Choose your preferred language:*",
-        "lang_set": "✅ Language set to **English 🇬🇧**."
+        "lang_set": "✅ Language set to **English 🇬🇧**.",
+        "maintenance_msg": (
+            "🔧 *BOT UNDER MAINTENANCE*\n\n"
+            "अभी bot पर काम चल रहा है।\n"
+            "कृपया कुछ समय बाद प्रयास करें।\n\n"
+            "— Team @KANHAIYA_VIP"
+        )
     },
     "hi": {
         "welcome": (
@@ -184,10 +253,9 @@ MESSAGES = {
             "┃ • 🌐 भाषा बदलने का विकल्प\n"
             "┃                        \n"
             "┃ 📌 *उपयोग कैसे करें:*\n"
-            "┃ नीचे दिए कीबोर्ड बटन दबाएं या लिखें:\n"
-            "┃ `/visit <region> <uid>`\n"
-            "┃ `/like <region> <uid>`\n"
-            "┃ `/info <region> <uid>`\n"
+            "┃ `/visit <uid>`\n"
+            "┃ `/like <uid>`\n"
+            "┃ `/info <uid>`\n"
             "┃                        \n"
             "┃ ══════════════════════ \n"
             "┃ 💫 @KANHAIYA_VIP 💫   \n"
@@ -195,10 +263,10 @@ MESSAGES = {
         ),
         "help": (
             "🔧 *कमांड उपयोग निर्देश:*\n\n"
-            "📊 *विजिट:* `/visit IN 123456789`\n"
-            "❤️ *लाइक:* `/like IN 123456789`\n"
-            "👤 *इन्फो:* `/info IN 123456789`\n\n"
-            "🌍 *रीजन:* IN, BD, PK, USA, BR\n"
+            "📊 *विजिट:* `/visit 123456789`\n"
+            "❤️ *लाइक:* `/like 123456789`\n"
+            "👤 *इन्फो:* `/info 123456789`\n\n"
+            "🌍 *सर्वर:* इंडियन (IND) — स्वचालित\n"
             "⚠️ *दैनिक सीमा:* 2 लाइक्स\n\n"
             "⚡ *Powered by @KANHAIYA_VIP*"
         ),
@@ -213,41 +281,47 @@ MESSAGES = {
         "join_both_first": "⚠️ *कृपया पहले चैनल और ग्रुप दोनों जॉइन करें!*",
         "daily_limit": "❌ *दैनिक सीमा समाप्त!*\nआप प्रतिदिन केवल 2 लाइक्स भेज सकते हैं।",
         "invalid_uid": "❌ UID में केवल संख्या होनी चाहिए!",
-        "usage_visit": "❌ उपयोग: `/visit IN 123456789`",
-        "usage_like": "❌ उपयोग: `/like IN 123456789`",
-        "usage_info": "❌ उपयोग: `/info IN 123456789`",
+        "usage_visit": "❌ उपयोग: `/visit 123456789`",
+        "usage_like": "❌ उपयोग: `/like 123456789`",
+        "usage_info": "❌ उपयोग: `/info 123456789`",
         "choose_lang": "🌐 *अपनी पसंदीदा भाषा चुनें:*",
-        "lang_set": "✅ आपकी भाषा **हिंदी 🇮🇳** सेट कर दी गई है।"
+        "lang_set": "✅ आपकी भाषा **हिंदी 🇮🇳** सेट कर दी गई है।",
+        "maintenance_msg": (
+            "🔧 *बॉट मेंटेनेंस पर है*\n\n"
+            "अभी bot पर काम चल रहा है।\n"
+            "कृपया कुछ समय बाद प्रयास करें।\n\n"
+            "— Team @KANHAIYA_VIP"
+        )
     }
 }
 
 def get_user_lang(user_id):
-    storage = load_storage()
-    return storage["languages"].get(str(user_id), "hi")
+    return _STATE["languages"].get(str(user_id), "hi")
 
 def set_user_lang(user_id, lang):
-    storage = load_storage()
-    storage["languages"][str(user_id)] = lang
-    save_storage(storage)
+    _STATE["languages"][str(user_id)] = lang
 
 def get_text(user_id, key):
     lang = get_user_lang(user_id)
     return MESSAGES.get(lang, MESSAGES["hi"]).get(key, "")
 
+# ============ REGION HELPERS ============
+def get_region():
+    return _STATE.get("region", DEFAULT_REGION)
+
+# ============ MAINTENANCE HELPERS ============
+def is_maintenance_on():
+    return bool(_STATE.get("maintenance", False))
+
 # ============ VERIFICATION HELPERS ============
 async def is_member_of_all(bot, user_id):
     if user_id == ADMIN_ID:
         return True
-    # मुख्य चैनल + ग्रुप + अतिरिक्त चैनल्स
     check_list = [CHANNEL_USERNAME, GROUP_USERNAME]
-    try:
-        storage = load_storage()
-        for ch in storage.get("extra_channels", []):
-            uname = ch.get("username")
-            if uname:
-                check_list.append(uname)
-    except Exception:
-        pass
+    for ch in _STATE.get("extra_channels", []):
+        uname = ch.get("username")
+        if uname:
+            check_list.append(uname)
 
     for ch in check_list:
         try:
@@ -261,13 +335,10 @@ async def is_member_of_all(bot, user_id):
 def is_user_unlocked(user_id):
     if user_id == ADMIN_ID:
         return True
-    storage = load_storage()
-    return bool(storage["verified_users"].get(str(user_id)))
+    return bool(_STATE["verified_users"].get(str(user_id)))
 
 def unlock_user(user_id):
-    storage = load_storage()
-    storage["verified_users"][str(user_id)] = True
-    save_storage(storage)
+    _STATE["verified_users"][str(user_id)] = True
 
 # ============ ADMIN ACTIVITY ALERT ============
 async def notify_admin(context: ContextTypes.DEFAULT_TYPE, user, command_text):
@@ -277,7 +348,7 @@ async def notify_admin(context: ContextTypes.DEFAULT_TYPE, user, command_text):
         user_name = user.full_name or "Unknown"
         username = f"@{user.username}" if user.username else "No Username"
         time_now = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
-        
+
         alert = (
             "🚨 *USER BOT ACTIVITY ALERT* 🚨\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -296,10 +367,9 @@ async def notify_admin(context: ContextTypes.DEFAULT_TYPE, user, command_text):
 def can_user_like(user_id):
     if user_id == ADMIN_ID:
         return True
-    storage = load_storage()
     today = str(date.today())
     uid = str(user_id)
-    user_data = storage["user_limits"].get(uid, {"date": today, "count": 0})
+    user_data = _STATE["user_limits"].get(uid, {"date": today, "count": 0})
     if user_data["date"] != today:
         return True
     return user_data["count"] < 2
@@ -307,13 +377,11 @@ def can_user_like(user_id):
 def update_user_like(user_id):
     if user_id == ADMIN_ID:
         return
-    storage = load_storage()
     today = str(date.today())
     uid = str(user_id)
-    if uid not in storage["user_limits"] or storage["user_limits"][uid]["date"] != today:
-        storage["user_limits"][uid] = {"date": today, "count": 0}
-    storage["user_limits"][uid]["count"] += 1
-    save_storage(storage)
+    if uid not in _STATE["user_limits"] or _STATE["user_limits"][uid]["date"] != today:
+        _STATE["user_limits"][uid] = {"date": today, "count": 0}
+    _STATE["user_limits"][uid]["count"] += 1
 
 # ============ STYLISH ANIMATION SYSTEM ============
 ANIMATION_STAGES = [
@@ -462,8 +530,7 @@ async def call_visit_api(region, uid):
         return {"error": f"❌ Error: {str(e)}"}
 
 async def call_like_api(region, uid):
-    region_upper = region.upper()
-    url = f"{LIKE_API_URL}like?uid={uid}&region={region_upper}&key={API_KEY}"
+    url = f"{LIKE_API_URL}like?uid={uid}&region={region}&key={API_KEY}"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=15) as resp:
@@ -474,7 +541,7 @@ async def call_like_api(region, uid):
                             "success": True,
                             "player": data.get('PlayerNickname', 'Unknown'),
                             "uid": data.get('UID', uid),
-                            "region": data.get('Region', region_upper),
+                            "region": data.get('Region', region),
                             "given": data.get('LikesGivenByAPI', 0),
                             "before": data.get('LikesbeforeCommand', 0),
                             "after": data.get('LikesafterCommand', 0)
@@ -500,7 +567,7 @@ async def call_info_api(region, uid):
 
                     gender_raw = social.get("gender", "N/A")
                     gender = "Female ♀️" if "FEMALE" in str(gender_raw).upper() else ("Male ♂️" if "MALE" in str(gender_raw).upper() else "N/A")
-                    
+
                     return {
                         "success": True,
                         "nickname": basic.get("nickname") or basic.get("Nickname") or "Unknown",
@@ -524,12 +591,53 @@ async def call_info_api(region, uid):
     except Exception as e:
         return {"error": f"❌ Error: {str(e)}"}
 
+# ============ AUTO LIKE (24h) ============
+async def try_auto_like(bot):
+    """हर 24 घंटे में एक बार auto like भेजे"""
+    today = str(date.today())
+    if _STATE.get("last_auto_like_date") == today:
+        return
+    # maintenance में auto-like skip
+    if is_maintenance_on():
+        return
+
+    region = get_region()
+    result = await call_like_api(region, AUTO_LIKE_UID)
+    _STATE["last_auto_like_date"] = today
+    try:
+        await persist(bot)
+    except Exception:
+        pass
+
+    # Admin को रिपोर्ट भेजें
+    try:
+        if "error" in result:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"⚠️ *Auto-Like Failed*\n\nUID: `{AUTO_LIKE_UID}`\nError: {result['error']}",
+                parse_mode="Markdown"
+            )
+        else:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "✅ *Auto-Like Success*\n\n"
+                    f"UID: `{AUTO_LIKE_UID}`\n"
+                    f"Player: `{result.get('player')}`\n"
+                    f"Region: `{result.get('region')}`\n"
+                    f"Given: `+{result.get('given')}`\n"
+                    f"After: `{result.get('after')}`"
+                ),
+                parse_mode="Markdown"
+            )
+    except Exception as e:
+        logger.error(f"Auto-like admin report error: {e}")
+
 # ============ TELEGRAM COMMAND HANDLERS ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await notify_admin(context, user, "/start")
 
-    # यदि यूज़र अनलॉक्ड नहीं है
     if not is_user_unlocked(user.id):
         await update.message.reply_text(
             get_text(user.id, "lock_msg"),
@@ -538,9 +646,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    welcome_text = get_text(user.id, "welcome")
+    # Maintenance ON हो और admin न हो → सिर्फ maintenance message
+    if is_maintenance_on() and user.id != ADMIN_ID:
+        await update.message.reply_text(
+            get_text(user.id, "maintenance_msg"),
+            parse_mode="Markdown"
+        )
+        return
+
     await update.message.reply_text(
-        welcome_text,
+        get_text(user.id, "welcome"),
         parse_mode="Markdown",
         reply_markup=get_main_reply_keyboard(user.id)
     )
@@ -550,6 +665,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await notify_admin(context, user, "/help")
     if not is_user_unlocked(user.id):
         await update.message.reply_text(get_text(user.id, "lock_msg"), parse_mode="Markdown", reply_markup=get_join_verification_markup(user.id))
+        return
+    if is_maintenance_on() and user.id != ADMIN_ID:
+        await update.message.reply_text(get_text(user.id, "maintenance_msg"), parse_mode="Markdown")
         return
     await update.message.reply_text(get_text(user.id, "help"), parse_mode="Markdown", reply_markup=get_main_reply_keyboard(user.id))
 
@@ -565,21 +683,25 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def visit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await notify_admin(context, user, f"/visit {' '.join(context.args)}")
-    
+
     if not is_user_unlocked(user.id):
         await update.message.reply_text(get_text(user.id, "lock_msg"), parse_mode="Markdown", reply_markup=get_join_verification_markup(user.id))
         return
 
-    if len(context.args) != 2:
+    if is_maintenance_on() and user.id != ADMIN_ID:
+        await update.message.reply_text(get_text(user.id, "maintenance_msg"), parse_mode="Markdown")
+        return
+
+    if len(context.args) != 1:
         await update.message.reply_text(get_text(user.id, "usage_visit"), parse_mode="Markdown")
         return
-    region = context.args[0].upper()
     try:
-        uid = int(context.args[1])
+        uid = int(context.args[0])
     except ValueError:
         await update.message.reply_text(get_text(user.id, "invalid_uid"), parse_mode="Markdown")
         return
 
+    region = get_region()
     loading_msg = await send_animated_loading(update, context, "Visit")
     result = await call_visit_api(region, uid)
     if "error" in result:
@@ -596,12 +718,15 @@ async def like(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(get_text(user.id, "lock_msg"), parse_mode="Markdown", reply_markup=get_join_verification_markup(user.id))
         return
 
-    if len(context.args) != 2:
+    if is_maintenance_on() and user.id != ADMIN_ID:
+        await update.message.reply_text(get_text(user.id, "maintenance_msg"), parse_mode="Markdown")
+        return
+
+    if len(context.args) != 1:
         await update.message.reply_text(get_text(user.id, "usage_like"), parse_mode="Markdown")
         return
-    region = context.args[0].upper()
     try:
-        uid = int(context.args[1])
+        uid = int(context.args[0])
     except ValueError:
         await update.message.reply_text(get_text(user.id, "invalid_uid"), parse_mode="Markdown")
         return
@@ -610,6 +735,7 @@ async def like(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(get_text(user.id, "daily_limit"), parse_mode="Markdown")
         return
 
+    region = get_region()
     loading_msg = await send_animated_loading(update, context, "Like")
     result = await call_like_api(region, uid)
     if "error" in result:
@@ -617,6 +743,10 @@ async def like(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     update_user_like(user.id)
+    try:
+        await persist(context.bot)
+    except Exception:
+        pass
     result['region'] = region
     await loading_msg.edit_text(format_like_result(result), parse_mode="Markdown")
 
@@ -628,16 +758,20 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(get_text(user.id, "lock_msg"), parse_mode="Markdown", reply_markup=get_join_verification_markup(user.id))
         return
 
-    if len(context.args) != 2:
+    if is_maintenance_on() and user.id != ADMIN_ID:
+        await update.message.reply_text(get_text(user.id, "maintenance_msg"), parse_mode="Markdown")
+        return
+
+    if len(context.args) != 1:
         await update.message.reply_text(get_text(user.id, "usage_info"), parse_mode="Markdown")
         return
-    region = context.args[0].upper()
     try:
-        uid = int(context.args[1])
+        uid = int(context.args[0])
     except ValueError:
         await update.message.reply_text(get_text(user.id, "invalid_uid"), parse_mode="Markdown")
         return
 
+    region = get_region()
     loading_msg = await send_animated_loading(update, context, "Info")
     result = await call_info_api(region, uid)
     if "error" in result:
@@ -653,11 +787,16 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ============ TEXT & BUTTON INPUT HANDLER ============
 async def handle_user_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """कीबोर्ड बटन क्लिक या सामान्य टेक्स्ट को प्रोसेस करें"""
     user = update.effective_user
     text = update.message.text.strip()
 
-    # 1. कीबोर्ड बटन्स का रिस्पॉन्स
+    # Auto-like lazy trigger — कोई भी message आए तो check
+    try:
+        await try_auto_like(context.bot)
+    except Exception as e:
+        logger.error(f"Lazy auto-like error: {e}")
+
+    # कीबोर्ड बटन्स
     if text in ["📊 Visit", "/visit"]:
         await update.message.reply_text(get_text(user.id, "usage_visit"), parse_mode="Markdown")
         return
@@ -676,37 +815,66 @@ async def handle_user_text_message(update: Update, context: ContextTypes.DEFAULT
     elif text == "📢 Broadcast / Send" and user.id == ADMIN_ID:
         await update.message.reply_text(
             "📌 *Admin Broadcast Guide:*\n\n"
-            "• किसी यूजर को DM: `/send <USER_ID> <message>`\n"
-            "• किसी यूजर को मैसेज: `/msg <USER_ID> <message>`",
+            "• DM: `/send <USER_ID> <message>`\n"
+            "• Alias: `/msg <USER_ID> <message>`",
             parse_mode="Markdown"
         )
         return
     elif text == "➕ Add Channel" and user.id == ADMIN_ID:
         await update.message.reply_text(
             "📌 *Add Channel/Group Guide:*\n\n"
-            "फॉर्मेट: `/addchannel <username> <Display Name> <invite_link>`\n\n"
+            "`/addchannel <username> <Display Name> <invite_link>`\n\n"
             "उदाहरण:\n"
-            "`/addchannel @mynewchannel MyChannel https://t.me/mynewchannel`\n\n"
-            "• Bot को उस channel/group में admin बनाना ज़रूरी है।\n"
-            "• हटाने के लिए: `/removechannel <username>`",
+            "`/addchannel @mychannel MyChannel https://t.me/mychannel`\n\n"
+            "हटाने: `/removechannel @username`\n"
+            "सूची: `/channels`",
             parse_mode="Markdown"
         )
         return
+    elif text == "🌍 Region" and user.id == ADMIN_ID:
+        await show_region_menu(update, context)
+        return
+    elif text == "🔧 Maintenance" and user.id == ADMIN_ID:
+        await toggle_maintenance(update, context)
+        return
 
-    # 2. अगर यूजर पहले से अनलॉक है तो सामान्य टेक्स्ट पर कुछ न करें
     if is_user_unlocked(user.id):
         return
 
-    # 3. अनलॉक नहीं है → उसे verify करने की सलाह दें
     await update.message.reply_text(
         get_text(user.id, "lock_msg"),
         parse_mode="Markdown",
         reply_markup=get_join_verification_markup(user.id)
     )
 
-# ============ ADMIN EXCLUSIVE COMMANDS ============
+# ============ ADMIN: REGION & MAINTENANCE ============
+async def show_region_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    current = get_region()
+    keyboard = [
+        [InlineKeyboardButton(f"{'✅ ' if current == 'ind' else ''}ind (lowercase)", callback_data="set_region_ind")],
+        [InlineKeyboardButton(f"{'✅ ' if current == 'IND' else ''}IND (uppercase)", callback_data="set_region_IND")],
+    ]
+    await update.message.reply_text(
+        f"🌍 *Current Region:* `{current}`\n\nSelect region for all API calls:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def toggle_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _STATE["maintenance"] = not _STATE["maintenance"]
+    try:
+        await persist(context.bot)
+    except Exception:
+        pass
+    status = "ON 🔴" if _STATE["maintenance"] else "OFF 🟢"
+    await update.message.reply_text(
+        f"🔧 *Maintenance Mode:* {status}\n\n"
+        f"Users will {'see a maintenance message' if _STATE['maintenance'] else 'have normal access'}.",
+        parse_mode="Markdown"
+    )
+
+# ============ ADMIN COMMANDS ============
 async def send_dm_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """एडमिन द्वारा किसी यूजर को मैसेज भेजना: /send <user_id> <message>"""
     if update.effective_user.id != ADMIN_ID:
         return
     if len(context.args) < 2:
@@ -725,7 +893,6 @@ async def send_dm_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🚫 Failed to send: {e}")
 
 async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """एडमिन द्वारा नया चैनल/ग्रुप जोड़ना: /addchannel <username> <Display Name> <invite_link>"""
     if update.effective_user.id != ADMIN_ID:
         return
     if len(context.args) < 3:
@@ -741,32 +908,32 @@ async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     display_name = context.args[1]
     link = context.args[2]
 
-    storage = load_storage()
-    # duplicate check
-    for ch in storage["extra_channels"]:
+    for ch in _STATE["extra_channels"]:
         if ch.get("username", "").lower() == username.lower():
-            await update.message.reply_text(f"⚠️ `{username}` पहले से मौजूद है।", parse_mode="Markdown")
+            await update.message.reply_text(f"⚠️ `{username}` already exists.", parse_mode="Markdown")
             return
 
-    storage["extra_channels"].append({
+    _STATE["extra_channels"].append({
         "username": username,
         "name": display_name,
         "link": link
     })
-    save_storage(storage)
+    try:
+        await persist(context.bot)
+    except Exception:
+        pass
 
-    # bot admin है या नहीं verify करने की कोशिश
     warn = ""
     try:
         chat = await context.bot.get_chat(username)
         bot_member = await context.bot.get_chat_member(chat.id, context.bot.id)
         if bot_member.status not in ["administrator", "creator"]:
-            warn = "\n\n⚠️ *Warning:* Bot इस चैनल/ग्रुप का admin नहीं है। कृपया bot को admin बनाएं, वरना verify fail होगा।"
+            warn = "\n\n⚠️ Bot is not admin in this channel. Please make it admin."
     except TelegramError:
-        warn = "\n\n⚠️ *Warning:* Bot इस चैनल/ग्रुप को access नहीं कर पा रहा। कृपया bot को जोड़कर admin बनाएं।"
+        warn = "\n\n⚠️ Bot cannot access this channel. Please add & promote it."
 
     await update.message.reply_text(
-        f"✅ *Channel/Group जोड़ा गया:*\n\n"
+        f"✅ *Channel added:*\n\n"
         f"• Username: `{username}`\n"
         f"• Name: `{display_name}`\n"
         f"• Link: {link}{warn}",
@@ -774,7 +941,6 @@ async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def remove_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """एडमिन द्वारा चैनल/ग्रुप हटाना: /removechannel @username"""
     if update.effective_user.id != ADMIN_ID:
         return
     if len(context.args) < 1:
@@ -785,41 +951,82 @@ async def remove_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not username.startswith("@"):
         username = "@" + username
 
-    storage = load_storage()
-    before = len(storage["extra_channels"])
-    storage["extra_channels"] = [
-        ch for ch in storage["extra_channels"]
+    before = len(_STATE["extra_channels"])
+    _STATE["extra_channels"] = [
+        ch for ch in _STATE["extra_channels"]
         if ch.get("username", "").lower() != username.lower()
     ]
-    save_storage(storage)
+    try:
+        await persist(context.bot)
+    except Exception:
+        pass
 
-    if len(storage["extra_channels"]) < before:
-        await update.message.reply_text(f"✅ `{username}` हटा दिया गया।", parse_mode="Markdown")
+    if len(_STATE["extra_channels"]) < before:
+        await update.message.reply_text(f"✅ `{username}` removed.", parse_mode="Markdown")
     else:
-        await update.message.reply_text(f"⚠️ `{username}` सूची में नहीं मिला।", parse_mode="Markdown")
+        await update.message.reply_text(f"⚠️ `{username}` not found.", parse_mode="Markdown")
 
 async def list_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """एडमिन द्वारा सभी चैनल देखना: /channels"""
     if update.effective_user.id != ADMIN_ID:
         return
-    storage = load_storage()
     lines = [
         "*📋 Required Channels/Groups:*\n",
         f"• `{CHANNEL_USERNAME}` (Main Channel)",
         f"• `{GROUP_USERNAME}` (Main Group)",
         ""
     ]
-    extra = storage.get("extra_channels", [])
+    extra = _STATE.get("extra_channels", [])
     if extra:
         lines.append("*➕ Extra Channels/Groups:*")
         for ch in extra:
             lines.append(f"• `{ch.get('username')}` — {ch.get('name')}")
     else:
-        lines.append("_कोई अतिरिक्त चैनल/ग्रुप नहीं जोड़ा गया।_")
+        lines.append("_No extra channels._")
+
+    lines.append("")
+    lines.append(f"🌍 *Region:* `{get_region()}`")
+    lines.append(f"🔧 *Maintenance:* `{'ON' if is_maintenance_on() else 'OFF'}`")
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
-# ============ CALLBACK QUERY HANDLER ============
+async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_text("❌ Use: `/maintenance on` or `/maintenance off`", parse_mode="Markdown")
+        return
+    arg = context.args[0].lower()
+    if arg == "on":
+        _STATE["maintenance"] = True
+    elif arg == "off":
+        _STATE["maintenance"] = False
+    else:
+        await update.message.reply_text("❌ Use: `/maintenance on` or `/maintenance off`", parse_mode="Markdown")
+        return
+    try:
+        await persist(context.bot)
+    except Exception:
+        pass
+    await update.message.reply_text(
+        f"🔧 Maintenance: *{'ON 🔴' if _STATE['maintenance'] else 'OFF 🟢'}*",
+        parse_mode="Markdown"
+    )
+
+async def region_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_text(f"🌍 Current region: `{get_region()}`\n\nUse `/region ind` or `/region IND`", parse_mode="Markdown")
+        return
+    new_region = context.args[0]
+    _STATE["region"] = new_region
+    try:
+        await persist(context.bot)
+    except Exception:
+        pass
+    await update.message.reply_text(f"✅ Region set to `{new_region}`", parse_mode="Markdown")
+
+# ============ CALLBACK HANDLER ============
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = update.effective_user
@@ -828,16 +1035,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if data == "verify_membership":
-        # चैनल और ग्रुप की सदस्यता चेक करें
         if not await is_member_of_all(context.bot, user_id):
             await query.answer(get_text(user_id, "join_both_first"), show_alert=True)
             return
 
-        # ✅ सीधे अनलॉक कर दें (permanent, no daily re-verify)
         unlock_user(user_id)
+        try:
+            await persist(context.bot)
+        except Exception:
+            pass
         await notify_admin(context, user, "✅ Verified & Unlocked")
 
-        # Confirm message
         try:
             await query.edit_message_text(
                 get_text(user_id, "verified_success"),
@@ -846,7 +1054,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        # फिर main menu भेजें
+        # Maintenance हो और यूजर admin न हो
+        if is_maintenance_on() and user_id != ADMIN_ID:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=get_text(user_id, "maintenance_msg"),
+                parse_mode="Markdown"
+            )
+            return
+
         await context.bot.send_message(
             chat_id=user_id,
             text=get_text(user_id, "welcome"),
@@ -863,19 +1079,44 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "set_lang_hi":
         set_user_lang(user_id, "hi")
+        try:
+            await persist(context.bot)
+        except Exception:
+            pass
         await query.edit_message_text(get_text(user_id, "lang_set"), parse_mode="Markdown")
         await start(update, context)
 
     elif data == "set_lang_en":
         set_user_lang(user_id, "en")
+        try:
+            await persist(context.bot)
+        except Exception:
+            pass
         await query.edit_message_text(get_text(user_id, "lang_set"), parse_mode="Markdown")
         await start(update, context)
+
+    # Admin region callbacks
+    elif data == "set_region_ind" and user_id == ADMIN_ID:
+        _STATE["region"] = "ind"
+        try:
+            await persist(context.bot)
+        except Exception:
+            pass
+        await query.edit_message_text("✅ Region set to `ind` (lowercase)", parse_mode="Markdown")
+
+    elif data == "set_region_IND" and user_id == ADMIN_ID:
+        _STATE["region"] = "IND"
+        try:
+            await persist(context.bot)
+        except Exception:
+            pass
+        await query.edit_message_text("✅ Region set to `IND` (uppercase)", parse_mode="Markdown")
 
 # ============ VERCEL FASTAPI INTEGRATION ============
 app = FastAPI()
 ptb_application = Application.builder().token(BOT_TOKEN).build()
 
-# कमांड्स
+# Commands
 ptb_application.add_handler(CommandHandler("start", start))
 ptb_application.add_handler(CommandHandler("help", help_command))
 ptb_application.add_handler(CommandHandler("language", language_command))
@@ -883,20 +1124,28 @@ ptb_application.add_handler(CommandHandler("visit", visit))
 ptb_application.add_handler(CommandHandler("like", like))
 ptb_application.add_handler(CommandHandler("info", info))
 
-# एडमिन कमांड्स
+# Admin commands
 ptb_application.add_handler(CommandHandler("send", send_dm_to_user))
 ptb_application.add_handler(CommandHandler("msg", send_dm_to_user))
 ptb_application.add_handler(CommandHandler("addchannel", add_channel))
 ptb_application.add_handler(CommandHandler("removechannel", remove_channel))
 ptb_application.add_handler(CommandHandler("channels", list_channels))
+ptb_application.add_handler(CommandHandler("maintenance", maintenance_command))
+ptb_application.add_handler(CommandHandler("region", region_command))
 
-# इनलाइन व टेक्स्ट मैसेज हैंडलर्स
+# Handlers
 ptb_application.add_handler(CallbackQueryHandler(button_handler))
 ptb_application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_text_message))
 
 @app.on_event("startup")
 async def on_startup():
     await ptb_application.initialize()
+    # Telegram storage से load करें
+    try:
+        await load_storage_from_telegram(ptb_application.bot)
+        logger.info(f"Storage loaded. Region={get_region()}, Maintenance={is_maintenance_on()}")
+    except Exception as e:
+        logger.error(f"Startup storage load error: {e}")
 
 @app.post("/")
 async def process_update(request: Request):
@@ -911,3 +1160,13 @@ async def process_update(request: Request):
 @app.get("/")
 async def index():
     return {"status": "S.Kanhaiya Bot is running smoothly on Vercel!"}
+
+@app.get("/cron")
+async def cron_auto_like():
+    """External cron service (जैसे cron-job.org) हर 24h में इसे ping करे"""
+    try:
+        await try_auto_like(ptb_application.bot)
+        return {"status": "ok", "auto_like_date": _STATE.get("last_auto_like_date")}
+    except Exception as e:
+        logger.error(f"Cron auto-like error: {e}")
+        return {"status": "error", "message": str(e)}
